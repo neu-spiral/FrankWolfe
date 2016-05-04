@@ -221,7 +221,7 @@ if __name__=="__main__":
 #        for i in f:
 #            x[j]=i
 #            j=j+1
-    X=GenerateSimpleSamples(1000,20)
+    X=GenerateSimpleSamples(20000,30)
 #    solvefrankwolf(X,NumIti=10,gTol=0.01)
     
 #    X = matrix([-2.1213,    2.1213,
@@ -268,7 +268,7 @@ if __name__=="__main__":
 #        
 #        
 #
-    for i in range(n):
+    for i in range(n-14):
 #        
 #       
         start=time.time()
@@ -278,14 +278,14 @@ if __name__=="__main__":
     #print a[1],a[2],a[3],end-start
 
         result[i,:]=(a[1],end-start,a[3],Epsilon[i])#[Value,Time,Number of Itierations,Accuracy]
-    np.save('FrankWolfResults.npy',result)
-    for i in range(n):
+    np.save('FrankWolfResultsL.npy',result)
+    for i in range(n-14):
         start=time.time()
         a=experimentdsgn.solveDOpt(X,maxiters=60000,tol=Epsilon[i],show_progress=False)
         end = time.time()
         result2[i,:]=(simpleF(X,Project(a[0])),end-start,14,Epsilon[i])
         
-    np.save('InteriorPointResults.npy',result2)
+    np.save('InteriorPointResultsL.npy',result2)
 
 #
 #
