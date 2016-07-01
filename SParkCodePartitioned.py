@@ -122,7 +122,7 @@ def FWParallel(NoIterations):
     rddXL=rddXL.zipWithIndex()
      
 #    
-    rddXLP=rddXL.partitionBy(2).mapPartitionsWithIndex(lambda splitIndex,iterator:AddA(splitIndex, iterator,Ainv)).cache()
+    rddXLP=rddXL.partitionBy(16).mapPartitionsWithIndex(lambda splitIndex,iterator:AddA(splitIndex, iterator,Ainv)).cache()
 
 #    
 ###
@@ -152,8 +152,8 @@ def FWParallel(NoIterations):
     return result2
 ###
 if __name__=="__main__":
-    conf=SparkConf().setMaster("local[*]")
+    conf=SparkConf().setMaster("local[16]")
     sc=SparkContext(conf =conf)
-    print FWParallel(3)
+    #print FWParallel(3)
     #print "###### Result is :", FWParallel(500)
-    #np.save('ParallelResults.npy',FWParallel(200))
+    np.save('Par16.npy',FWParallel(200))

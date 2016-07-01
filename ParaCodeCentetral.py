@@ -19,7 +19,7 @@ import numpy as np
 from numpy.linalg import inv, norm
 import time 
 import cvxopt
-
+import argparse
     
 def maxmin(t1,t2):
     (grad1,x1,lam1,i1) =t1 
@@ -61,21 +61,22 @@ def rankOneInvUpdate(Ainv,u,v):
             
 
 
-def FWParallel(NoIterations):
+def FWParallel(NoIterations,NoPartitions):
 
    
-    rddX=sc.textFile("X1")
+    rddX=sc.textFile("FinalFile")
     N=rddX.count()
     
     rddX=rddX.map(lambda x:cvxopt.matrix(eval(x)))
-
+    d=rddX.map(lambda x:x.size[0]).reduce(lambda x,y: min(x,y))
     rddX=rddX.map(lambda t:(tuple(t),1.0/N))
-
-    rddX=rddX.zipWithIndex().partitionBy(2)
+    
+    rddX=rddX.zipWithIndex().partitionBy(NoPartitions)
     A=rddX.map(lambda ((x,lam),index):lam*np.matrix(x).T*np.matrix(x)).reduce(lambda x,y:x+y)
- #   Ainv=InversMtrix(A)
+   
+   #Ainv=InversMtrix(A)
     Ainv=inv(A)
-    d=(A.size)**0.5
+   
 
 
     #print "Ainv",Ainv
@@ -100,11 +101,12 @@ def FWParallel(NoIterations):
     
         binv=1/(1-Gamma)*Ainv
         Ainv=rankOneInvUpdate(binv,Gamma*np.matrix(xmin).T,np.matrix(xmin).T)
+     #   oldRDD=rddX
         rddX=rddX.map(lambda ((x,lam),i) : UpdateRDD(((x,lam),i),iStar,Gamma)).cache()
-   
+    #    oldRDD.unpersist()
         #print mingrad, gap
         k=k+1
-        print gap, mingrad
+#        print gap, mingrad
     end=time.time()    
 
     L = +cvxopt.matrix(Ainv)
@@ -114,8 +116,13 @@ def FWParallel(NoIterations):
     return (f,end-start,k,gap)
 
 if __name__=="__main__":
-    conf=SparkConf().setMaster("local[2]")
-    sc=SparkContext(conf =conf)
-    print FWParallel(20)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--partitions",type=int,default=8,help="Number of partitions")
+    parser.add_argument("--iterations",type=int,default=100,help="Number of iterations")
+    parser.add_argument("--outfile",type=str,default='Para.npy',help="OUTPUT File")
+    args = parser.parse_args()
+ # conf=SparkConf().setMaster("local[2]")
+    sc=SparkContext()
+   
     #print "###### Result is :", FWParallel(500)
-    #np.save('ParallelResults.npy',FWParallel(200))
+    np.save(args.outfile,FWParallel(args.iterations,args.partitions))
