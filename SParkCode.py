@@ -56,7 +56,7 @@ def rankOneInvUpdate(Ainv,u,v):
 def FWParallel(NoIterations):
 
    
-    rddX=sc.textFile("X1")
+    rddX=sc.textFile("X")
     rddX=rddX.map(lambda x:matrix(eval(x)))
     d=rddX.map(lambda x:x.size[0]).reduce(lambda x,y:min(x,y))
     N=rddX.count()
