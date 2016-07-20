@@ -1,0 +1,185 @@
+\documentclass[11pt, oneside]{article}
+
+\usepackage{verbatim}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{color}
+\usepackage{graphicx}
+%\usepackage[dvips]{graphicx}
+\usepackage{stmaryrd}
+\usepackage{bbm}
+\usepackage{listings}             % Include the listings-package
+%\usepackage{mathabx}
+%\input{definitions}
+\newcommand{\id}{\ensuremath{\mathbbm{1}}}
+\newcommand{\reals}{\ensuremath{\mathbb{R}}}
+\newcommand{\naturals}{\ensuremath{\mathbb{N}}}
+\newcommand{\prob}{\ensuremath{\mathbf{P}}}
+\newcommand{\expect}{\ensuremath{\mathbb{E}}}
+\newtheorem{lemma}{Lemma}
+\newtheorem{thm}{Theorem}
+\newcommand{\argmax}{\mathop{\arg\,\max}}
+\newcommand{\argmin}{\mathop{\arg\,\min}}
+\newcommand{\trace}{\mathop{\mathrm{trace}}}
+\newcommand{\diag}{\mathop{\mathrm{diag}}}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+
+
+\title{Massively Parallel Experimental Design \\Using the Frank-Wolfe Algorithm}\author{}
+\begin{document}
+\maketitle
+
+\section{Motivation}
+
+Experimental design \cite{boyd2004convex}, Gaussian processes \cite{krause2007nonmyopic,rasmussen2006gaussian}, sensor placement \cite{krause2007nonmyopic,summers2013optimal},  determinantal point processes \cite{kulesza2012determinantal}. Relationship to distributed submodular maximization \cite{mirzasoleiman2013distributed}, the continuous-greedy algorithm~\cite{vondrak2010submodularity}, and pipage rounding~\cite{ageev2004pipage}.
+
+\section{Problem Statement}
+
+Consider a set of $n$ vectors in  $x_i\in \reals^d$, $i\in \mathcal{N} \equiv \{1,\ldots, n\}$, and denote by $X=[x_i^\top]_{i\in \mathcal{N}}\in \reals^{n\times d}$ the $n\times d$ the corresponding design matrix. For $\lambda \in \reals^n$ and $\alpha>0$, let 
+\begin{align}A(\lambda) = I+ \alpha \sum_{i=1}^n \lambda_i x_ix_i^\top = I+ \alpha X\diag(\lambda)X^\top\in \reals^{d\times d}. \label{Amat}\end{align}
+Note that $A$ is symmetric and positive definite. Our goal is to parallelize the solution of the following problem:
+\begin{subequations} \label{masterproblem}
+\begin{align}
+\text{Minimize:}\quad &F_1(\lambda) =-\log\det A(\lambda)\\
+\text{subj.~to:}\quad &\sum_{i=1}^n \lambda_i \leq 1,\\
+&\lambda_i \geq 0, \text{ for all }i\in\mathcal{N}.
+\end{align} 
+\end{subequations}
+We will also consider variants of the problem, with objectives 
+\begin{align}F_2(\lambda) &= \trace\left( A^{-1}(\lambda) \right),& &\text{and} &   F_3(\lambda)&=\|A^{-1}(\lambda)\|_F^2. \end{align}
+Objectives $F_1$, $F_2$, and $F_3$ correspond to the $D$-optimality, $A$-optimality, and $E$-optimality criteria from experimental design.  Problem \eqref{masterproblem} is convex under all three objectives; it reduces to solving an SDP in the case of $F_2$ and $F_3$ \cite{boyd2004convex}.
+
+
+\section{Technical Preliminary} The partial derivatives of the three objectives can be expressed concisely in terms of the inverse of matrix $A(\lambda)$. In particular:
+\begin{align}\label{gradient}
+\frac{\partial F_\ell}{\partial \lambda_i} = x_i^\top A^{-\ell}(\lambda) x_i, \quad\text{ for }\ell\in \{1,2,3\}.
+\end{align}
+In our computations below, we leverage the Sherman-Morrison formula. This allows for the quick computation of the inverse of a matrix after a rank-one update. In particular, for any invertible $A\in \reals^{d\times d}$ and any $u,v\in\reals^d$, we have that:
+\begin{align} \left(A + uv^{\top}\right)^{-1} = A^{-1} - \frac{A^{-1}uv^{\top}A^{-1}}{1+v^\top A^{-1} u}.\label{sherman-morrison}\end{align} 
+
+
+
+\section{Parallel Solution Using the Frank-Wolfe Algorithm}
+
+\noindent\textbf{Serial Execution.} Consider a convex problem of the form:
+\begin{subequations}\label{convex}
+\begin{align}
+\text{Minimize} \quad & F(\lambda)\\
+\text{subj.~to:} \quad & \lambda \in \mathcal{D}
+\end{align}
+\end{subequations}
+where $F$ is convex and $\mathcal{D}$ is a convex set. The Frank-Wolfe algorithm  that solves \eqref{convex} by performing the following steps, for $k\in \naturals$:
+\begin{subequations}\label{frank-wolfe-general}
+\begin{align}
+s^{k+1} &= \argmin_{s\in \mathcal{D}}~~~s^\top \cdot \nabla F(\lambda^k),\label{fw:s}\\
+\lambda^{k+1}& = (1-\gamma_k) \lambda^k + \gamma_k s^{k+1},\label{fw:lam}
+\end{align}
+\end{subequations}
+with $\lambda_0\in \mathcal{D}$, and $\gamma_k$ a gain factor in $(0,1)$. Note that, by the convexity of $\mathcal{D}$, $\lambda^k$ is feasible for all $k$. 
+
+
+
+In \eqref{masterproblem}, the feasible domain is the convex hull of the simplex:
+$$\mathcal{D}= \{ \lambda\in \reals^d: \|\lambda\|_1\leq 1, \lambda\geq 0 \}. $$
+ Hence, applied to \eqref{masterproblem}, the first operation of Frank-Wolfe---namely, \eqref{fw:s}---attains a very simple form. Given a $\lambda\in\reals^d$, let
+ $$i^*_k=\argmin_{i\in \mathcal {N}} \frac{\partial F_1(\lambda^k)}{\partial \lambda_i}, \quad k\in \naturals,$$ 
+be  a coordinate of steepest descent\footnote{If the set of such coordinates is not a signleton, we break ties arbitrarily (e.g., lexicographically) to select a single $i^*$.} at the $k$-th iteration. Then \eqref{fw:s} can be expressed as follows: 
+\begin{align}\label{fw:sspecial}
+s^{k+1}_i & =\begin{cases} 1, & \text{if }i=i^*_k\\ 0, &\text{o.w.},\end{cases}\quad \text{for }i\in\mathcal{N}\text{ and }k\in\naturals. 
+\end{align}
+Put differently, $s^{k+1}=e_{i^*(\lambda^k)}$, the $i^*(\lambda)$-th vector of the standard orthonormal basis. Hence, $s^{k+1}$ is a (very) sparse vector at every iteration $k\in \naturals$.
+
+This has an immediate implication on the complexity of computing $\nabla F_1(\lambda^k)$ from one iteration to the next. In particular, recall by \eqref{gradient} that computing $\nabla F_1(\lambda^k)$ involves the use of the inverse $A^{-1}(\lambda^k)$, with $A(\lambda)$ defined by $\eqref{Amat}$. Let
+$$A_k = A(\lambda^k), \quad k \in \naturals, $$ 
+be the matrix used in the $k$-th iteration of the Frank-Wolfe algorithm. %, and
+%$$i^*_k = i^*(\lambda_k), k=0,1,\ldots, $$
+%the coordinate of steepest descent in the $k$-th iteration.
+ Then, the it is an immediate implication of the Sherman-Morrison formula \eqref{sherman-morrison} that $A^{-1}_{k+1}$ can be computed directly from $A^{-1}_k$. In particular, by \eqref{fw:lam} and \eqref{fw:sspecial}:
+$$A_{k+1} = (1-\gamma_k) A_k + \gamma_k x_{i^*_k} x_{i^*_k}^\top. $$
+Hence, \eqref{sherman-morrison} implies that
+\begin{align*}A_{k+1}^{-1} & = \frac{1}{1-\gamma_k} \left(   A^{-1}_k - \frac{\gamma_k A^{-1}_kx_{i^*_k} x_{i^*_k}^\top A^{-1}_k  }{ (1-\gamma_k)+ \gamma_k  x_{i^*_k}^{\top} A^{-1}_k x_{i^*_k} } \right)\\
+&=  \frac{1}{1-\gamma_k} \left(   A^{-1}_k - \frac{\gamma_k y_ky_k^\top  }{ (1-\gamma_k)+ \gamma_k  x_{i^*_k}^{\top} y_k } \right), \end{align*}
+where $y_k \equiv A^{-1}_kx_{i^*_k}.$
+Thus, $A_k^{-1}$ can be computed from $A_k^{-1}$ in $\Theta(d^2)$ operations, as this computation involves only: (a) a matrix-vector multiplication, (b) an outer and an inner vector product, and (c) matrix additions, subtractions, and multiplications by scalars. 
+
+The serial version of this algorithm is summarized in \eqref{alg:serialfw}. The inner for-loop for the computation of the gradient has $\Theta(n\times d^2)$ complexity, and the remaining operations within an iteration have $O(d^2)$ complexity. Crucially, the gradient computation, and the determination of $i^*$, can be performed in a parallel fashion, as we discuss below.
+\begin{algorithm}[t]
+\begin{small}
+  \caption{\textsc{Serial Frank-Wolfe}}\label{alg:serialfw}
+  %{\fontsize{9}{9}\selectfont
+  \begin{algorithmic}[1]
+   \STATE Pick $\lambda\in \mathcal{D}$:
+   \STATE Let $A_{\texttt{inv}} \leftarrow A^{-1}(\lambda)$
+   \WHILE{ convergence condition not met}
+     \STATE $k\leftarrow k+1$
+    \FOR{ $i\in \mathcal{N}$}
+     \STATE $z_i \leftarrow x_i^T A_{\texttt{inv}} x_i$
+    \ENDFOR
+    \STATE $i^* \leftarrow \argmin_{i\in \mathcal{N}} z_i$
+    \STATE $\lambda\leftarrow (1-\gamma_k) \lambda + \gamma_k e_{i^*} $
+    \STATE $y = A_{\texttt{inv}} \cdot x_{i^*}$
+    \STATE $A_{\texttt{inv}} \leftarrow \frac{1}{1-\gamma_k} \left(A_{\texttt{inv}} - \frac{\gamma_k y y^\top}{(1-\gamma_k)+ \gamma_k x_{i^*}^\top y} \right) $ 
+  \ENDWHILE
+  \end{algorithmic}
+%}
+\end{small}
+\end{algorithm}
+
+
+
+
+\subsection{Serial Code: Running Time Complexity}
+Running time of the serial algorithm for $D-optimal Design$ different input sizes can be found in the figures (1) to (3). Considering figure(1), it can be seen that running tine of the serial algorithm grows linearly with respect to $N$, also, from figures (2), (3), it is obvious that running time is nonlinear with respect to $d$, and the slope of lines in figure (3) which is the results of figure (2) in logarithm scale, shows power of nonlinear term, which is found to be $1.98{\approx}2$. This result was expected because  the most expensive operation in the serial is computing the gradient which is $O(Nd^2)$.  
+
+ \begin{figure}[h!]
+    \includegraphics[scale=1.0,width=130mm]{TimeN.jpeg}
+    \caption{Running time of serial code for 100 iterations of D optimal design, for different $N$}
+    \label{fig:f1}
+    \end{figure}
+ \begin{figure}[h!]
+    \includegraphics[scale=1.0,width=130mm]{Timed.jpeg}
+    \caption{Running time of serial code for 100 iterations of D optimal design, for different $d$}
+    \label{fig:f1}
+    \end{figure}    
+ \begin{figure}[h!]
+    \includegraphics[scale=1.0,width=130mm]{Timedlog.jpeg}
+    \caption{Logarithmic scale running time of serial code for 100 iterations of D optimal design, for different $N$}
+    \label{fig:f1}
+    \end{figure}
+\subsection{Serial Code: Comparison to Other Algorithms}
+After analysis of running time of the serial algorithm, we have compared performance of our algorithm with Interior Point algorithm. The results can be found in figures (4) and (5). 
+ \begin{figure}[h!]
+    \includegraphics[scale=1.0,width=130mm]{fig5000by20.jpeg}
+    \caption{Comparison between performance of our algorithm and Interior Point algorithm for D optimal design}
+    \label{fig:f1}
+    \end{figure}    
+ \begin{figure}[h!]
+    \includegraphics[scale=1.0,width=130mm]{fig7000by20.jpeg}
+    \caption{Comparison between performance of our algorithm and Interior Point algorithm for D optimal design}
+    \label{fig:f1}
+    \end{figure}
+\section{Parallel Algorithm}
+Results for parallel algorithm is as follows:
+ \begin{figure}[h!]
+    \includegraphics[scale=1.0,width=130mm]{LPvsTIME.jpeg}
+    \caption{Result of parallel implementation of D optimal design problem for different levels of parallelism}
+    \label{fig:f1}
+    \end{figure}    
+ \begin{figure}[h!]
+    \includegraphics[scale=1.0,width=130mm]{50by1para.jpeg}
+    \caption{Result of parallel implementation of D optimal design problem for different levels of parallelism}
+    \label{fig:f1}
+    \end{figure} 
+
+
+ 
+
+
+
+
+\bibliographystyle{plain}
+\bibliography{references}
+\end{document}
+
