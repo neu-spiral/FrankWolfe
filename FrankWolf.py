@@ -17,7 +17,7 @@ from DataGener import GenerateSmples,GenerateSimpleSamples
 import experimentdsgn
 import numpy as np
 import matplotlib.pyplot as plt
-
+from  scipy.optimize import newton 
 
 #def GenerateSmples(N):
 #    #N=200
@@ -165,7 +165,7 @@ def solvefrankwolf(X,NumIti=100.0,gTol=1.0):#,Epsilon):
     while k < NumIti and gap>gTol: 
 
            z=fastGrad(X,ainv)
-           
+      
       
            
            Gamma1=1.0/(k+2.0)
@@ -185,7 +185,7 @@ def solvefrankwolf(X,NumIti=100.0,gTol=1.0):#,Epsilon):
                
            gap=((l-S)*z.T)[0] 
    
-          # print gap
+         #  print gap
            if Gamma2>1:
                Gamma=Gamma1
            else:
@@ -211,7 +211,7 @@ def solvefrankwolf(X,NumIti=100.0,gTol=1.0):#,Epsilon):
            
 
            k=k+1
-           print gap
+          
 
     f = simpleF(X,l) 
 
@@ -266,7 +266,7 @@ def solveF2(X,NumIti=100,gTol=1.0):
         t=UpdateTrace(t,binv,c,min(z),Gamma)
         
         k=k+1
-
+        print t,gap
       
         
 
@@ -289,19 +289,27 @@ def computeGammaF3(a,b,c,t):
         df=matrix(0.0,(1,1))
         f[0,0]=x**2*b**2/((1-x+a*x)**2*(1-x)**2)-2*x*c/((1-x+a*x)*(1-x)**2)+t/(1-x)**2
  
-       
+  
         df[0,0]=  (2*x*b**2)/((x - 1)**2*(a*x - x + 1)**2) - (2*c)/((x - 1)**2*(a*x - x + 1)) - (2*t)/(x - 1)**3 - (2*x**2*b**2)/((x - 1)**3*(a*x - x + 1)**2) + (4*x*c)/((x - 1)**3*(a*x - x + 1)) - (2*x**2*b**2*(a - 1))/((x - 1)**2*(a*x - x + 1)**3) + (2*x*c*(a - 1))/((x - 1)**2*(a*x - x + 1)**2)
            
         if z is None:return f,df
         H=matrix(0.0,(1,1))    
         
         #H[0,0]=z[0]*(2*b**2)/(a*x - x + 1)**2 + (6*t)/(x - 1)**4 + (8*c)/((x - 1)**3*(a*x - x + 1)) + (4*c*(a - 1))/((x - 1)**2*(a*x - x + 1)**2) + (6*x**2*b**2*(a - 1)**2)/(a*x - x + 1)**4 - (8*x*b**2*(a - 1))/(a*x - x + 1)**3 - (12*x*c)/((x - 1)**4*(a*x - x + 1)) - (4*x*c*(a - 1)**2)/((x - 1)**2*(a*x - x + 1)**3) - (8*x*c*(a - 1))/((x - 1)**3*(a*x - x + 1)**2)    
-        H[0,0]=z[0]*(6*t)/(x - 1)**4 + (8*c)/((x - 1)**3*(a*x - x + 1)) + (2*b**2)/((x - 1)**2*(a*x - x + 1)**2) - (8*x*b**2)/((x - 1)**3*(a*x - x + 1)**2) + (4*c*(a - 1))/((x - 1)**2*(a*x - x + 1)**2) + (6*x**2*b**2)/((x - 1)**4*(a*x - x+ 1)**2) - (12*x*c)/((x - 1)**4*(a*x - x + 1)) - (8*x*b**2*(a - 1))/((x - 1)**2*(a*x - x + 1)**3) - (4*x*c*(a - 1)**2)/((x - 1)**2*(a*x - x + 1)**3) + (8*x**2*b**2*(a - 1))/((x - 1)**3*(a*x - x + 1)**3) - (8*x*c*(a - 1))/((x - 1)**3*(a*x - x + 1)**2) + (6*x**2*b**2*(a - 1)**2)/((x - 1)**2*(a*x - x + 1)**4)       
+        H[0,0]=z[0]*((6*t)/(x - 1)**4 + (8*c)/((x - 1)**3*(a*x - x + 1)) + (2*b**2)/((x - 1)**2*(a*x - x + 1)**2) - (8*x*b**2)/((x - 1)**3*(a*x - x + 1)**2) + (4*c*(a - 1))/((x - 1)**2*(a*x - x + 1)**2) + (6*x**2*b**2)/((x - 1)**4*(a*x - x+ 1)**2) - (12*x*c)/((x - 1)**4*(a*x - x + 1)) - (8*x*b**2*(a - 1))/((x - 1)**2*(a*x - x + 1)**3) - (4*x*c*(a - 1)**2)/((x - 1)**2*(a*x - x + 1)**3) + (8*x**2*b**2*(a - 1))/((x - 1)**3*(a*x - x + 1)**3) - (8*x*c*(a - 1))/((x - 1)**3*(a*x - x + 1)**2) + (6*x**2*b**2*(a - 1)**2)/((x - 1)**2*(a*x - x + 1)**4) )      
         return f,df,H
     G=matrix([[-1.0,1.0]]) 
     h=matrix([0.0,1.0]) 
     solvers.options['show_progress'] = False
     return solvers.cp(F, G=G, h=h)['x']
+def GammaF3(a,b,c,t):
+    def func(x):
+        return (2*x*b**2)/((x - 1)**2*(a*x - x + 1)**2) - (2*c)/((x - 1)**2*(a*x - x + 1)) - (2*t)/(x - 1)**3 - (2*x**2*b**2)/((x - 1)**3*(a*x - x + 1)**2) + (4*x*c)/((x - 1)**3*(a*x - x + 1)) - (2*x**2*b**2*(a - 1))/((x - 1)**2*(a*x - x + 1)**3) + (2*x*c*(a - 1))/((x - 1)**2*(a*x - x + 1)**2)
+    def fprime(x):
+        return ((6*t)/(x - 1)**4 + (8*c)/((x - 1)**3*(a*x - x + 1)) + (2*b**2)/((x - 1)**2*(a*x - x + 1)**2) - (8*x*b**2)/((x - 1)**3*(a*x - x + 1)**2) + (4*c*(a - 1))/((x - 1)**2*(a*x - x + 1)**2) + (6*x**2*b**2)/((x - 1)**4*(a*x - x+ 1)**2) - (12*x*c)/((x - 1)**4*(a*x - x + 1)) - (8*x*b**2*(a - 1))/((x - 1)**2*(a*x - x + 1)**3) - (4*x*c*(a - 1)**2)/((x - 1)**2*(a*x - x + 1)**3) + (8*x**2*b**2*(a - 1))/((x - 1)**3*(a*x - x + 1)**3) - (8*x*c*(a - 1))/((x - 1)**3*(a*x - x + 1)**2) + (6*x**2*b**2*(a - 1)**2)/((x - 1)**2*(a*x - x + 1)**4) )
+        
+    return newton(func,0.005,fprime)   
+        
 def solveF3(X,NumIti=100,gTol=1.0):
     N=X.size[1]
     d=X.size[0]
@@ -314,6 +322,7 @@ def solveF3(X,NumIti=100,gTol=1.0):
     k=0
     while k < NumIti: 
         z=fastGrad(X,2*ainv3)
+       
         minind=argmin(z)
         a=(X[:,minind].T*ainv*X[:,minind])[0]
         b=(X[:,minind].T*ainv2*X[:,minind])[0]
@@ -324,8 +333,9 @@ def solveF3(X,NumIti=100,gTol=1.0):
 
         
         
-        Gamma=computeGammaF3(a,b,c,t)
-
+     #   Gamma=computeGammaF3(a,b,c,t)
+    #    print Gamma
+        Gamma=GammaF3(a,b,c,t)
         
   #      Gamma=1.0/(k+2.0)
         
@@ -359,15 +369,17 @@ def solveF3(X,NumIti=100,gTol=1.0):
         k=k+1
     
         
-        print  t, gap
+        print  t
       
         
 
     return l,float(np.trace(ainv2)),gap    
 
 if __name__=="__main__":
-    X=GenerateSimpleSamples(10000,100)
-#    a=solvefrankwolf(X,NumIti=20,gTol=0.00001)
+    
+    X=GenerateSimpleSamples(7000,80)
+#    a=solveF3(X,300,0.001)
+#   a=solvefrankwolf(X,NumIti=20,gTol=0.00001)
     
     
 #    N=20
@@ -403,41 +415,66 @@ if __name__=="__main__":
              0.0000,   -1.5000 ], (2,20)) 
 
 
-    AresultFW=matrix(0.0,(16,2))
-    AresultIP=matrix(0.0,(13,2))
-    X=GenerateSimpleSamples(2000,200)
-    a=solveF3(X,20)
-#    Epsilon=matrix([2.4,2.2,2.0,1.5,1.0,0.5,0.3,0.2,0.1,0.07,0.05,0.03,0.01],(1,13))
-#    Epsilon2matrix=matrix([2.0,0.005,0.001,0.0001,0.00001,0.000001,1.e-7,1.e-8,1.e-9,1.e-10],(1,10))
-
-    
-    
+#    AresultFW=matrix(0.0,(7,2))
+    AresultIP=matrix(0.0,(19,2))
+#  #  X=GenerateSimpleSamples(20,2)
+##    a=solvefrankwolf(X,600)
+##    Epsilon=matrix([2.4,2.2,2.0,1.5,1.0,0.5,0.3,0.2,0.1,0.07,0.05,0.03,0.01],(1,13))
+##    Epsilon2matrix=matrix([2.0,0.005,0.001,0.0001,0.00001,0.000001,1.e-7,1.e-8,1.e-9,1.e-10],(1,10))
+#
+#    
+#    
 #    NumberofIterationsFW=matrix([50,100,200,300,400,500,600,700,800,900,1000,1100,1200,1300,1400,1500],(1,16))
-##    start=time.time()
+#    NumberofIterationsFW=matrix([50,100,200,300,400,500,600],(1,7))
+#    for i in range(16):
+#        start=time.time()
+#        a=solvefrankwolf(X,NumIti=NumberofIterationsFW[i],gTol=1.e-5)
+#        end=time.time()  
+#        AresultFW[i,:]=(a[1],end-start)
+#    # Fun Value, time, gap , NoIter
+#        print end-start, a[1]
+#       
+#    np.save('EFW100by60.npy',AresultFW)    
+##    for i in range(13):    
+##        start=time.time()
+##        b=experimentdsgn.solveDOpt(X,matrixes=i+1,tol=1.e-10,show_progress=False)
+##        end = time.time()
+##        fIP=simpleF(X,Project(b[0]))
+##        AresultIP[i,:]=(fIP,end-start)# Fun Value, time, NoIter
+##        print end-start, fIP
+##
+####    
+#    np.save('IP5000by60.npy',AresultIP)
+###    start=time.time()
 ##    a=solveF2(X,NumIti=1000,gTol=1.e-3)
 ##    end=time.time()
 #    
 #
 #
 ##
-#    for i in range(16):
+    for i in range(13):    
+        start=time.time()
+        b=experimentdsgn.solveDOpt(X,matrixes=i+1,tol=1.e-20,show_progress=False)
+     
+        end = time.time()
+        fIP=simpleF(X,Project(b[0]))
+   
+        AresultIP[i,:]=(fIP,end-start)# Fun Value, time, NoIter
+        print end-start, fIP
+
+##    
+    np.save('IP7000by80.npy',AresultIP)
+######   
+#    NumberofIterationsFW=[5,50,100,150,200,300,400,500,640]
+#    AresultFW=matrix(0.0,(len(NumberofIterationsFW),2))
+#    for i in range(len(NumberofIterationsFW)):
 #        start=time.time()
-#        a=solveF2(X,NumIti=NumberofIterationsFW[i],gTol=1.e-5)
+#        a=solvefrankwolf(X,NumIti=NumberofIterationsFW[i],gTol=1.e-5)
 #        end=time.time()  
 #        AresultFW[i,:]=(a[1],end-start)# Fun Value, time, gap , NoIter
 #        print end-start, a[1]
-#    np.save('AFW1000by60.npy',AresultFW)    
-#    for i in range(13):    
-#        start=time.time()
-#        b=experimentdsgn.solveAoptimal(X,matrixes=i+1,show_progress=False)
-#        end = time.time()
-#        fIP=np.trace(computeInverse(X,Project(b[0])))
-#        AresultIP[i,:]=(fIP,end-start)# Fun Value, time, NoIter
-#        print end-start, fIP
-#
-##    
-#    np.save('AIP1000by60.npy',AresultIP)
-##    
+##    np.save('FW7000by40.npy',AresultFW)    
+###   
 #    R1=matrix(0.0,(5,5)) 
 ##    R2=matrix(0.0,(5,8))
 #    i=0
