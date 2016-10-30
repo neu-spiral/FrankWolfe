@@ -577,7 +577,7 @@ class EoptimalDist(SparkFW):
         gap=main_rdd.flatMapValues(lambda t:t).flatMapValues(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).map(lambda (key, value):value).reduce(lambda x,y:x+y)
         return gap
 class CVXapprox(SparkFW):
-    def __init__(self,P,optgam,inputfile,outfile,npartitions,niterations,desiredgap,sampmode,beta,ptr):
+    def __init__(self,P,optgam,inputfile,outfile,npartitions,niterations,desiredgap,sampmode,beta,ptr,stopiter,randseed):
         self.P = P
         self.optgam=optgam
         self.inputefile=inputfile
@@ -588,6 +588,8 @@ class CVXapprox(SparkFW):
         self.sampmode=sampmode
         self.beta=beta
         self.ptr=ptr
+        self.stopiter=stopiter
+        self.randseed=randseed
     def gen_comm_info(self,main_rdd):
         def genelem(tpl):
             p=[]
@@ -610,7 +612,16 @@ class CVXapprox(SparkFW):
             return p  
         (mingrad,xmin,lambdaMin,iStar)=main_rdd.flatMapValues(CompMingrad).map(lambda (key, value):value).reduce(maxmin)        
         return (mingrad,xmin,lambdaMin,iStar) 
- 
+    def initz(self,rddXLP,cinfo):
+        R = cinfo
+        def addz(R,t):
+            p=[]
+            [tpl,gen] =t
+            for ((tx,lam),index) in tpl:
+                p.append(((tx,lam,(2*np.matrix(tx)*R)[0,0]),index))
+            return [p,gen]
+        rddXLP=rddXLP.mapValues(lambda t:addz(R,t)).cache()
+        return rddXLP
     def compute_mingrad_nonsmooth(self,main_rdd,cinfo,k):
         R=cinfo
         def compgrad(tpl):
@@ -619,27 +630,13 @@ class CVXapprox(SparkFW):
             
         (mingrad,xmin,lambdaMin,iStar)=main_rdd.flatMapValues(lambda t:t).filter(lambda t:random.random()<self.ptr).mapValues(compgrad).map(lambda (key, value):value).reduce(maxmin)        
         return (mingrad,xmin,lambdaMin,iStar)       
-    def compute_mingrad_smooth(self,t,cinfo):
-        R=cinfo
-        (tx,lam,z)=t
-        return (tx,lam,(2*np.matrix(tx)*R)[0,0])
     def computeoptgam(self,cinfo,xmin,iStar,mingrad):
         R=cinfo
         a=((np.matrix(xmin).T-self.P).T*(np.matrix(xmin).T-self.P))[0,0]
         b=(R.T*R)[0,0]
         c=((np.matrix(xmin).T-self.P).T*R)[0,0]
         return ((b-c)/(a+b-2.0*c))
-    def computegapsmooth(self,cinfo,main_rdd,iStar,mingrad,lambdaMin):
-        R=cinfo
-        def CompGap(tpl,lambdaMin,mingrad,iStar):
-            (index,(tx,lam, z)) = tpl
-            if index!=iStar:
-                out=((2*np.matrix(tx)*R*lam)[0,0])
-            else:
-                out=((lambdaMin-1)*mingrad)
-            return out      
-        gap=main_rdd.map(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).reduce(lambda x,y:x+y)
-        return gap    
+        
     def computefunc(self,cinfo): 
         R = cinfo
         f = float( R.T*R )
@@ -667,8 +664,30 @@ class CVXapprox(SparkFW):
             return p   
         gap=main_rdd.flatMapValues(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).map(lambda (key, value):value).reduce(lambda x,y:x+y)
         return gap 
+    def update_lam_z(self, main_rdd, cinfo,iStar,Gamma):
+        R = cinfo
+        def update(t, R):
+            p=[]
+            [tpl, gen] = t
+            for ((tx,lam,z),index) in tpl:
+                znew=0.0
+                if gen.random()<self.ptr:
+                    znew=(2*np.matrix(tx)*R)[0,0]
+                else:
+                    znew= 0.0
+                zupdtd = (1.0-self.beta)*z + self.beta*znew
+                if index != iStar:
+                    lamupdt = (1-Gamma)*lam
+                else:
+                    lamupdt = (1-Gamma)*lam +lam
+                p.append(((tx,lamupdt,zupdtd),index))
+            out = [p,gen]
+            return out
+
+        main_rdd = main_rdd.mapValues(lambda t:update(t,R)).persist()
+        return main_rdd
 class Adaboost(SparkFW):
-    def __init__(self,r,C,optgam,inputfile,outfile,npartitions,niterations,desiredgap,sampmode,beta,ptr):
+    def __init__(self,r,C,optgam,inputfile,outfile,npartitions,niterations,desiredgap,sampmode,beta,ptr,stopiter,randseed):
         self.r = r
         self.C = C
         self.optgam=optgam
@@ -679,7 +698,9 @@ class Adaboost(SparkFW):
         self.desiredgap=desiredgap
         self.sampmode=sampmode
         self.beta=beta
-        self.ptr=ptr     
+        self.ptr=ptr
+        self.stopiter=stopiter
+        self.ranseed=randseed     
     def  gen_comm_info(self,main_rdd,d):
         def cominfo(tpl):
             p=[]
@@ -710,7 +731,21 @@ class Adaboost(SparkFW):
          
             return p  
         (mingrad,xmin,lambdaMin,iStar)=main_rdd.flatMapValues(lambda tpl:CompMingrad(tpl,z)).map(lambda (key, value):value).reduce(maxmin)        
-        return (mingrad,xmin,lambdaMin,iStar)  
+        return (mingrad,xmin,lambdaMin,iStar) 
+    def initz(self,rddXLP,cinfo):
+        d,V = cinfo
+        z=matrix(0.0,(d,1))
+        vSum=float(np.sum(V))
+        for j in range(d):
+            z[j]=-V[j]*self.C*self.r[j]/vSum
+        def addz(z,t):
+            p=[]
+            [tpl,gen] =t
+            for ((tx,lam),index) in tpl:
+                p.append(((tx,lam,(np.matrix(tx)*np.matrix(z))[0,0]),index))
+            return [p,gen]
+        rddXLP=rddXLP.mapValues(lambda t:addz(z,t)).cache()
+        return rddXLP 
     def compute_mingrad_nonsmooth(self,main_rdd,cinfo,k):
         d,V=cinfo
         z=matrix(0.0,(d,1))
@@ -771,6 +806,32 @@ class Adaboost(SparkFW):
         d, V =cinfo
         summing=float(np.sum(V))
         return math.log(summing)   
+    def update_lam_z(self, main_rdd, cinfo,iStar,Gamma):
+        d,V = cinfo
+        zV=matrix(0.0,(d,1))
+        vSum=float(np.sum(V))
+        for j in range(d):
+            zV[j]=-V[j]*self.C*self.r[j]/vSum
+        def update(t, zV):
+            p=[]
+            [tpl, gen] = t
+            for ((tx,lam,z),index) in tpl:
+                znew=0.0
+                if gen.random()<self.ptr:
+                    znew=(np.matrix(tx)*np.matrix(zV))[0,0]
+                else:
+                    znew= 0.0
+                zupdtd = (1.0-self.beta)*z + self.beta*znew
+                if index != iStar:
+                    lamupdt = (1-Gamma)*lam
+                else:
+                    lamupdt = (1-Gamma)*lam +lam
+                p.append(((tx,lamupdt,zupdtd),index))
+            out = [p,gen]
+            return out
+
+        main_rdd = main_rdd.mapValues(lambda t:update(t,zV)).persist()
+        return main_rdd
 def mainalgorithm(obj,beta,remmode,remfiles):
    # sc=SparkContext()
    # SparkContext.setCheckpointDir("/gss_gpfs_scratch/armin_m/checkp")
@@ -874,8 +935,8 @@ if __name__=="__main__":
    # parser.add_argument("--inputP",default='in1by500',type=str)
     args = parser.parse_args()
     random.seed( args.randseed)
-    P=np.matrix(np.load('Bin1by500.npy'))
-    obj=AoptimalDist(optgam=args.optgam,inputfile=args.inputfile,outfile=args.outfile,npartitions=args.npartitions,niterations=args.niterations,desiredgap=args.desiredgap,beta=args.beta,sampmode=args.sampmode,ptr=args.ptr,stopiter=args.stopiter, randseed=args.randseed)
+    P=np.matrix(np.load('In500by1.npy'))
+    obj=CVXapprox(P=P,optgam=args.optgam,inputfile=args.inputfile,outfile=args.outfile,npartitions=args.npartitions,niterations=args.niterations,desiredgap=args.desiredgap,beta=args.beta,sampmode=args.sampmode,ptr=args.ptr,stopiter=args.stopiter, randseed=args.randseed)
 
     mainalgorithm(obj,beta=args.beta, remmode = args.remmode,remfiles=args.remfiles )
     
