@@ -6,7 +6,7 @@ Created on Thu Sep 15 17:36:57 2016
 """
 import os 
 import time
-from cvxopt import lapack,blas,solvers
+from cvxopt import lapack,blas,solvers,matrix
 from pyspark import SparkConf, SparkContext
 import json
 import numpy as np
@@ -21,14 +21,18 @@ import math
 from scipy import mod
 import random
 import shutil
-
+from random import Random
 def Addgrad(tpl):
     p=[]
     for ((tx,lam,state),index) in tpl:
         p.append(((lam,(-np.matrix(tx)*np.matrix(tx).T)[0,0]),index))
     return p
 
-
+def FormForSave(tpl):
+    p= []
+    for ((tx ,lam),index) in tpl:
+        p.append((tx,lam))
+    return p
 def generate_samples(state):
     random.setstate(state)
     return random.random()
@@ -118,8 +122,26 @@ class SparkFW():
         pass
     def compute_mingrad(self,main_rdd,cinfo):
         pass
-    def compute_mingrad_smooth(self,main_rdd,cinfo):
-        pass
+    def computegapsmooth(self,main_rdd,iStar,mingrad,lambdaMin,k):
+        def CompGap(tpl,lambdaMin,mingrad,iStar):
+            ((tx,lam,z),index)  = tpl
+            if index!=iStar:
+                out=z*lam
+            else:
+                out=((lambdaMin-1)*mingrad)
+            return out
+        gap=main_rdd.mapValues(lambda tpl:tpl[0]).flatMapValues(lambda t: t).sample(0,self.ptr,k).mapValues(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).map(lambda (key, value):value).reduce(lambda x,y:x+y)
+        return gap
+    def compute_mingrad_smooth(self,main_rdd):
+        def arrange(tpl):
+            p=[]
+            [t,gen]=tpl
+            for  ((tx,lam,z),index) in t:
+                p.append((z,tx,lam,index))
+            return p
+        (mingrad,xmin,lambdaMin,iStar)=main_rdd.flatMapValues(arrange).map(lambda (key ,value): value).reduce(maxmin)
+        return (mingrad,xmin,lambdaMin,iStar)
+
     def compute_mingrad_nonsmooth(self,main_rdd,cinfo,k):
         pass
     def computeoptgam(self,cinfo,xmin,iStar,mingrad):
@@ -131,17 +153,7 @@ class SparkFW():
     def save_cinfo(filename,cinfo):
         pass
     def update_lambda(self,main_rdd,iStar,Gamma):
-        if self.sampmode== 'smooth':
-            def Update(tpl,iStar,Gamma):
-                p =[]
-                for ((tx,lam,state,z),index) in tpl:
-                    if index!=iStar:
-                        p.append(((tx,(1.0-Gamma)*lam,state,z),index))
-                    else:
-                        p.append(((tx,(1.0-Gamma)*lam+Gamma,state,z),index))
-                return p
-               
-        else:
+        if self.sampmode != 'smooth':
             def Update(tpl,iStar,Gamma):
                 p=[]
                 for ((tx,lam),index) in tpl:
@@ -153,14 +165,17 @@ class SparkFW():
         main_rdd=main_rdd.mapValues(lambda tpl:Update(tpl,iStar,Gamma)).cache()
         
         return main_rdd
-    def Addseed(self,t,randSeed):
-        p=[]
-        (Pid, tpl) = t
-        random.seed(randSeed[Pid])
-        for ((tx,lam),index) in tpl:
-            dummy = random.random()
-            p.append(((tx,lam,random.getstate()),index))
-        return (Pid, p)
+    def Addgener(self,main_rdd):
+        def Addseed(spltInd, tpl):
+            p=[]
+            for ((tx,lam),index) in tpl:
+                p.append(((tx,lam),index))
+            rangen = Random()
+            rangen.seed(spltInd)
+            newp = (p,rangen)
+            return (spltInd, newp)
+        main_rdd = main_rdd.map(lambda (spltInd, tpl):Addseed(spltInd, tpl)).persist()
+        return main_rdd
     def initial_smooth(self,tpl,cinfo):
         pass
 class DoptimalDist(SparkFW):
@@ -168,6 +183,16 @@ class DoptimalDist(SparkFW):
         A=main_rdd.flatMapValues(ComputeA).map(lambda (key,value):value).reduce(lambda x,y:x+y)
 
         return inv(A) 
+    def initz(self,rddXLP,cinfo):
+        Ainv = cinfo
+        def addz(Ainv,t):
+            p=[]
+            [tpl,gen] =t
+            for ((tx,lam),index) in tpl: 
+                p.append(((tx,lam,(-np.matrix(tx)*Ainv*np.matrix(tx).T)[0,0]),index))
+            return [p,gen]
+        rddXLP=rddXLP.mapValues(lambda t:addz(Ainv,t)).cache()
+        return rddXLP
     def adapt_z_state(self,main_rdd, cinfo,beta):
         ainv = cinfo
         def Updatez(tpl):
@@ -212,16 +237,8 @@ class DoptimalDist(SparkFW):
             ((tx,lam),index) = tpl
             return ((-np.matrix(tx)*Ainv*np.matrix(tx).T)[0,0],tx,lam,index)
             
-        (mingrad,xmin,lambdaMin,iStar)=main_rdd.flatMapValues(lambda t:t).sample(0,self.ptr,k).mapValues(compgrad).map(lambda (key, value):value).reduce(maxmin)        
+        (mingrad,xmin,lambdaMin,iStar)=main_rdd.flatMapValues(lambda t:t).filter(lambda t:random.random()<self.ptr).mapValues(compgrad).map(lambda (key, value):value).reduce(maxmin)        
         return (mingrad,xmin,lambdaMin,iStar)      
-    def compute_mingrad_smooth(self,main_rdd,cinfo):
-        def arrange(tpl):
-            p=[]
-            for  ((tx,lam,state,z),index) in tpl:
-                p.append((z,tx,lam,index))
-            return p
-        (mingrad,xmin,lambdaMin,iStar)=main_rdd.flatMapValues(arrange).map(lambda (key ,value): value).reduce(maxmin)
-        return (mingrad,xmin,lambdaMin,iStar)
     def computeoptgam(self,cinfo,xmin,iStar,mingrad):
         BB=-mingrad
         d=len(xmin)
@@ -233,6 +250,7 @@ class DoptimalDist(SparkFW):
         lapack.potrf(L) 
         f=2.0*np.sum(np.log(np.diag(L))) 
         return f
+    
     def computegap(self,cinfo,main_rdd,iStar,mingrad,lambdaMin):
         Ainv=cinfo
         def CompGap(tpl,lambdaMin,mingrad,iStar):
@@ -256,17 +274,22 @@ class DoptimalDist(SparkFW):
             return g 
         gap=main_rdd.flatMapValues(lambda t:t).sample(0,self.ptr,k).mapValues(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).map(lambda (key, value):value).reduce(lambda x,y:x+y)
         return gap 
-    def computegapsmooth(self,cinfo,main_rdd,iStar,mingrad,lambdaMin,k):
-        Ainv=cinfo
-        def CompGap(tpl,lambdaMin,mingrad,iStar):
-            ((tx,lam,state,z),index)  = tpl
-            if index!=iStar:
-                out=z*lam
-            else:
-                out=((lambdaMin-1)*mingrad)
-            return out      
-        gap=main_rdd.flatMapValues(lambda t: t).sample(0,self.ptr,k).mapValues(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).map(lambda (key, value):value).reduce(lambda x,y:x+y)
-        return gap
+    
+    def adaptz(self,rddXLP,cinfo,beta):
+        ainv = cinfo
+        def adapt(t,ainv,beta):
+            p=[]
+            for ((tx,lam,z),index) in t:
+                samp= random.random()
+                if samp<self.ptr:
+                    znew = -(np.matrix(tx)*ainv*np.matrix(tx).T)[0,0]
+                else:
+                    znew = 0.0
+                zout= (1.0-beta)*z + beta*znew
+                p.append(((tx,lam,zout),index))
+            return p
+        rddXLP=rddXLP.mapValues(lambda t:adapt(t,ainv,beta)).cache()
+        return rddXLP
     def initial_smooth(self, rdd, cinfo):
         Ainv= cinfo
         def Addgrad(tpl,Ainv):
@@ -275,13 +298,46 @@ class DoptimalDist(SparkFW):
                  p.append(((tx,lam,state,(-np.matrix(tx)*Ainv*np.matrix(tx).T)[0,0]),index))
              return p
         rdd = rdd.mapValues(lambda tpl:Addgrad(tpl,Ainv)).cache()
-        return rdd   
+        return rdd 
+    def update_lam_z(self, main_rdd, cinfo,iStar,Gamma):
+        ainv = cinfo
+        def update(t, ainv):
+            p=[]
+            [tpl, gen] = t
+            for ((tx,lam,z),index) in tpl:
+                znew=0.0
+                if gen.random()<self.ptr:
+                    znew=-(np.matrix(tx)*ainv*np.matrix(tx).T)[0,0]
+                else:
+                    znew= 0.0
+                zupdtd = (1.0-self.beta)*z + self.beta*znew
+                if index != iStar:
+                    lamupdt = (1-Gamma)*lam
+                else:
+                    lamupdt = (1-Gamma)*lam +lam
+                p.append(((tx,lamupdt,zupdtd),index))
+            out = [p,gen]
+            return out
+               
+        main_rdd = main_rdd.mapValues(lambda t:update(t,ainv)).persist()
+        return main_rdd
 class AoptimalDist(SparkFW):
     def gen_comm_info(self,main_rdd):
         A=main_rdd.flatMapValues(lambda iterator:ComputeA(iterator)).map(lambda (key,value):value).reduce(lambda x,y:x+y)
         ainv= inv(A)    
         ainv2= ainv*ainv
         return ainv,ainv2
+    def initz(self,rddXLP,cinfo):
+        Ainv, Ainv2 = cinfo
+        def addz(Ainv2,t):
+            p=[]
+            [tpl,gen] =t
+            for ((tx,lam),index) in tpl:
+                p.append(((tx,lam,(-np.matrix(tx)*Ainv2*np.matrix(tx).T)[0,0]),index))
+            return [p,gen]
+        rddXLP=rddXLP.mapValues(lambda t:addz(Ainv2,t)).cache()
+        return rddXLP
+
     def rmb_comm_info(self,filename):
         Ainv =np.matrix( np.load(filename+'A1.npy') )
         Ainv2 = np.matrix( np.load(filename+'A2.npy') )
@@ -314,7 +370,7 @@ class AoptimalDist(SparkFW):
             return p  
         (mingrad,xmin,lambdaMin,iStar)=main_rdd.flatMapValues(CompMingrad).map(lambda (key, value):value).reduce(maxmin)        
         return (mingrad,xmin,lambdaMin,iStar) 
-    def compute_mingrad_nonsmooth(self,main_rdd,cinfo):
+    def compute_mingrad_nonsmooth(self,main_rdd,cinfo,k):
         Ainv, Ainv2=cinfo
         def compgrad(tpl):
             ((tx,lam),index) = tpl
@@ -322,10 +378,7 @@ class AoptimalDist(SparkFW):
             
         (mingrad,xmin,lambdaMin,iStar)=main_rdd.flatMapValues(lambda t:t).filter(lambda t: random.random()<self.ptr).mapValues(compgrad).map(lambda (key, value):value).reduce(maxmin)        
         return (mingrad,xmin,lambdaMin,iStar)       
-    def compute_mingrad_smooth(self,t,cinfo):
-        Ainv, Ainv2=cinfo
-        (tx,lam,z)=t
-        return (tx,lam,(-np.matrix(tx)*Ainv2*np.matrix(tx).T)[0,0])
+   
     def computeoptgam(self,cinfo,xmin,iStar,mingrad):
         ainv,ainv2=cinfo
         b= np.matrix(xmin)*ainv2*np.matrix(xmin).T
@@ -333,23 +386,13 @@ class AoptimalDist(SparkFW):
         c=float(U*np.matrix(xmin).T)
         t=float(np.trace(ainv))
         return float((t - c*t + math.sqrt(-b*(c - 1)*(b - c*t)))/(b + t - b*c - 2*c*t + c**2*t))
-    def computegapsmooth(self,cinfo,main_rdd,iStar,mingrad,lambdaMin):
-        Ainv, Ainv2=cinfo
-        def CompGap(tpl,lambdaMin,mingrad,iStar):
-            (index,(tx,lam, z)) = tpl
-            if index!=iStar:
-                out=(-(np.matrix(tx)*Ainv2*np.matrix(tx).T*lam)[0,0])
-            else:
-                out=((lambdaMin-1)*mingrad)
-            return out      
-        gap=main_rdd.filter(lambda t: random.random()<self.ptr).map(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).reduce(lambda x,y:x+y)
-        return gap    
+       
     def computefunc(self,cinfo): 
         ainv, ainv2=cinfo
         f=float(np.trace(ainv))
         return f
         
-    def computegapnonsmooth(self,cinfo,main_rdd,iStar,mingrad,lambdaMin):
+    def computegapnonsmooth(self,cinfo,main_rdd,iStar,mingrad,lambdaMin,k):
         Ainv, Ainv2=cinfo
         def CompGap(tpl,lambdaMin,mingrad,iStar):
             ((tx,lam),index) = tpl
@@ -372,6 +415,29 @@ class AoptimalDist(SparkFW):
             return p
         gap=main_rdd.flatMapValues(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).map(lambda (key, value):value).reduce(lambda x,y:x+y)
         return gap
+    def update_lam_z(self, main_rdd, cinfo,iStar,Gamma):
+        ainv,ainv2 = cinfo
+        def update(t, ainv2):
+            p=[]
+            [tpl, gen] = t
+            for ((tx,lam,z),index) in tpl:
+                znew=0.0
+                if gen.random()<self.ptr:
+                    znew=-(np.matrix(tx)*ainv2*np.matrix(tx).T)[0,0]
+                else:
+                    znew= 0.0
+                zupdtd = (1.0-self.beta)*z + self.beta*znew
+                if index != iStar:
+                    lamupdt = (1-Gamma)*lam
+                else:
+                    lamupdt = (1-Gamma)*lam +lam
+                p.append(((tx,lamupdt,zupdtd),index))
+            out = [p,gen]
+            return out
+
+        main_rdd = main_rdd.mapValues(lambda t:update(t,ainv2)).persist()
+        return main_rdd
+
     def initial_smooth(self, rdd, cinfo):
         ((tx,lam),index) = tpl
         Ainv, Ainv2= cinfo
@@ -510,7 +576,204 @@ class EoptimalDist(SparkFW):
             return p
         gap=main_rdd.flatMapValues(lambda t:t).flatMapValues(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).map(lambda (key, value):value).reduce(lambda x,y:x+y)
         return gap
+class CVXapprox(SparkFW):
+    def __init__(self,P,optgam,inputfile,outfile,npartitions,niterations,desiredgap,sampmode,beta,ptr):
+        self.P = P
+        self.optgam=optgam
+        self.inputefile=inputfile
+        self.outfile=outfile
+        self.npartitions=npartitions
+        self.niterations=niterations
+        self.desiredgap=desiredgap
+        self.sampmode=sampmode
+        self.beta=beta
+        self.ptr=ptr
+    def gen_comm_info(self,main_rdd):
+        def genelem(tpl):
+            p=[]
+            for ((tx,lam),index)  in tpl:
+                p.append(np.matrix(tx).T*lam)
+            return p
+        A=main_rdd.flatMapValues(genelem).map(lambda (key,value):value).reduce(lambda x,y:x+y)
+        R = A- self.P
+        return R
+    def update_comm_info(self,cinfo,iStar,mingrad,txmin,Gamma):
+       R=cinfo
+       return (1-Gamma)*R+Gamma*(np.matrix(txmin).T-self.P)
+    def compute_mingrad(self,main_rdd,cinfo):
+        R = cinfo
+        def CompMingrad(tpl):
+            p=[]
+            for ((tx,lam),index) in tpl:
+                p.append(((2*np.matrix(tx)*R)[0,0],tx,lam,index))
+         
+            return p  
+        (mingrad,xmin,lambdaMin,iStar)=main_rdd.flatMapValues(CompMingrad).map(lambda (key, value):value).reduce(maxmin)        
+        return (mingrad,xmin,lambdaMin,iStar) 
+ 
+    def compute_mingrad_nonsmooth(self,main_rdd,cinfo,k):
+        R=cinfo
+        def compgrad(tpl):
+            ((tx,lam),index) = tpl
+            return ((2*np.matrix(tx)*R)[0,0],tx,lam,index)
+            
+        (mingrad,xmin,lambdaMin,iStar)=main_rdd.flatMapValues(lambda t:t).filter(lambda t:random.random()<self.ptr).mapValues(compgrad).map(lambda (key, value):value).reduce(maxmin)        
+        return (mingrad,xmin,lambdaMin,iStar)       
+    def compute_mingrad_smooth(self,t,cinfo):
+        R=cinfo
+        (tx,lam,z)=t
+        return (tx,lam,(2*np.matrix(tx)*R)[0,0])
+    def computeoptgam(self,cinfo,xmin,iStar,mingrad):
+        R=cinfo
+        a=((np.matrix(xmin).T-self.P).T*(np.matrix(xmin).T-self.P))[0,0]
+        b=(R.T*R)[0,0]
+        c=((np.matrix(xmin).T-self.P).T*R)[0,0]
+        return ((b-c)/(a+b-2.0*c))
+    def computegapsmooth(self,cinfo,main_rdd,iStar,mingrad,lambdaMin):
+        R=cinfo
+        def CompGap(tpl,lambdaMin,mingrad,iStar):
+            (index,(tx,lam, z)) = tpl
+            if index!=iStar:
+                out=((2*np.matrix(tx)*R*lam)[0,0])
+            else:
+                out=((lambdaMin-1)*mingrad)
+            return out      
+        gap=main_rdd.map(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).reduce(lambda x,y:x+y)
+        return gap    
+    def computefunc(self,cinfo): 
+        R = cinfo
+        f = float( R.T*R )
+        return f
+    def computegapnonsmooth(self,cinfo,main_rdd,iStar,mingrad,lambdaMin,k):
+        R = cinfo
+        def CompGap(tpl,lambdaMin,mingrad,iStar):
+            ((tx,lam),index) =tpl
+            if index!=iStar:
+                out=(2*np.matrix(tx)*R*lam)[0,0]
+            else:
+                out=(lambdaMin-1)*mingrad
+            return out
+        gap=main_rdd.flatMapValues(lambda t:t).sample(0,self.ptr,k).mapValues(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).map(lambda (key, value):value).reduce(lambda x,y:x+y)
+        return gap
+    def computegap(self,cinfo,main_rdd,iStar,mingrad,lambdaMin):
+        R = cinfo
+        def CompGap(tpl,lambdaMin,mingrad,iStar):
+            p=[]
+            for ((tx,lam),index) in tpl:
+                if index!=iStar:
+                    p.append((2*np.matrix(tx)*R*lam)[0,0])
+                else:
+                    p.append((lambdaMin-1)*mingrad)
+            return p   
+        gap=main_rdd.flatMapValues(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).map(lambda (key, value):value).reduce(lambda x,y:x+y)
+        return gap 
+class Adaboost(SparkFW):
+    def __init__(self,r,C,optgam,inputfile,outfile,npartitions,niterations,desiredgap,sampmode,beta,ptr):
+        self.r = r
+        self.C = C
+        self.optgam=optgam
+        self.inputefile=inputfile
+        self.outfile=outfile
+        self.npartitions=npartitions
+        self.niterations=niterations
+        self.desiredgap=desiredgap
+        self.sampmode=sampmode
+        self.beta=beta
+        self.ptr=ptr     
+    def  gen_comm_info(self,main_rdd,d):
+        def cominfo(tpl):
+            p=[]
+            for ((tx,lam),index) in tpl:
+                p.append(np.matrix(tx).T*lam)
+            return p    
+        c=main_rdd.flatMapValues(cominfo).map(lambda (key,value):value).reduce(lambda x,y:x+y)
+        V=matrix(0.0,(d,1))
+        for j in range(d):
+            V[j]=math.exp(-self.C*self.r[j]*c[j,0])    
+        return d,V
+    def update_comm_info(self,cinfo,iStar,mingrad,txmin,Gamma):
+        d,V=cinfo
+        Vnew=matrix(0.0,(d,1))
+        for j in range(d):
+            Vnew[j]=(V[j]**(1.0-Gamma))*math.exp(-Gamma*self.C*np.matrix(txmin)[0,j]*self.r[j])
+        return d,Vnew 
+    def compute_mingrad(self,main_rdd,cinfo):
+        d,V = cinfo
+        z=matrix(0.0,(d,1))
+        vSum=float(np.sum(V))
+        for j in range(d):
+            z[j]=-V[j]*self.C*self.r[j]/vSum
+        def CompMingrad(tpl,z):
+            p=[]
+            for ((tx,lam),index) in tpl:
+                p.append(((np.matrix(tx)*np.matrix(z))[0,0],tx,lam,index))
+         
+            return p  
+        (mingrad,xmin,lambdaMin,iStar)=main_rdd.flatMapValues(lambda tpl:CompMingrad(tpl,z)).map(lambda (key, value):value).reduce(maxmin)        
+        return (mingrad,xmin,lambdaMin,iStar)  
+    def compute_mingrad_nonsmooth(self,main_rdd,cinfo,k):
+        d,V=cinfo
+        z=matrix(0.0,(d,1))
+        vSum=float(np.sum(V))
+        for j in range(d):
+            z[j]=-V[j]*self.C*self.r[j]/vSum
+        def compgrad(tpl):
+            ((tx,lam),index) = tpl
+            return ((np.matrix(tx)*np.matrix(z))[0,0],tx,lam,index)
+
+        (mingrad,xmin,lambdaMin,iStar)=main_rdd.flatMapValues(lambda t:t).filter(lambda t:random.random()<self.ptr).mapValues(compgrad).map(lambda (key, value):value).reduce(maxmin)
+        return (mingrad,xmin,lambdaMin,iStar)
+  
+    def computeoptgam(self,cinfo,xmin,iStar,mingrad):
+        d,V=cinfo
+        a=matrix(0.0,(d,1))
+        b=matrix(0.0,(d,1))
+        for j in range(d):
+            a[j]= -math.log(V[j])-self.C*np.matrix(xmin)[0,j]*self.r[j]
+            b[j]=math.log(V[j])  
+        G=matrix([[1.0,-1.0]])
+        h=matrix([[1.0,0.0]])
+        K=[d]
+        solvers.options['show_progress'] = False
+        return (solvers.gp(G=G,h=h,g=b,F=a,K=K)['x'])[0]
+    def computegap(self,cinfo,main_rdd,iStar,mingrad,lambdaMin):
+        d,V = cinfo
+        z=matrix(0.0,(d,1))
+        vSum=float(np.sum(V))
+        for j in range(d):
+            z[j]=-V[j]*self.C*self.r[j]/vSum
+        def CompGap(tpl,lambdaMin,mingrad,iStar):
+            p=[]
+            for ((tx,lam),index) in tpl:
+                if index!=iStar:
+                    p.append((np.matrix(tx)*np.matrix(z))[0,0]*lam)
+                else:
+                    p.append((lambdaMin-1)*mingrad)
+            return p   
+        gap=main_rdd.flatMapValues(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).map(lambda (key, value):value).reduce(lambda x,y:x+y)
+        return gap 
+    def computegapnonsmooth(self,cinfo,main_rdd,iStar,mingrad,lambdaMin,k):
+        d,V = cinfo
+        z=matrix(0.0,(d,1))
+        vSum=float(np.sum(V))
+        for j in range(d):
+            z[j]=-V[j]*self.C*self.r[j]/vSum
+        def CompGap(tpl,lambdaMin,mingrad,iStar):
+            ((tx,lam),index) =tpl
+            if index!=iStar:
+                out=(np.matrix(tx)*np.matrix(z))[0,0]*lam
+            else:
+                out=(lambdaMin-1)*mingrad
+            return out
+        gap=main_rdd.flatMapValues(lambda t:t).sample(0,self.ptr,k).mapValues(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).map(lambda (key, value):value).reduce(lambda x,y:x+y)
+        return gap
+    def computefunc(self,cinfo): 
+        d, V =cinfo
+        summing=float(np.sum(V))
+        return math.log(summing)   
 def mainalgorithm(obj,beta,remmode,remfiles):
+   # sc=SparkContext()
+   # SparkContext.setCheckpointDir("/gss_gpfs_scratch/armin_m/checkp")
     sc=SparkContext()
     if remmode ==0:
         rddX=obj.readinput(sc)     
@@ -522,33 +785,38 @@ def mainalgorithm(obj,beta,remmode,remfiles):
         rddX=rddX.zipWithIndex()
         rddXLP=rddX.partitionBy(obj.npartitions).mapPartitionsWithIndex(lambda splitindex, iterator:CreateRdd(splitindex, iterator)).persist()
     else:
+        d=500
         rddXLP=sc.textFile(remfiles).map(lambda x:eval(x))
+        rddXLP=rddXLP.flatMap(lambda t: t)
+        rddXLP=rddXLP.zipWithIndex()
+        rddXLP=rddXLP.mapPartitionsWithIndex(CreateRdd).persist()
+        
     start = time.time()
     cinfo=obj.gen_comm_info(rddXLP)
-    if remmode ==0:
+    
+    if remmode ==1:
         start = time.time()
     if obj.sampmode == 'smooth':
-        randSeed = np.random.randint(2000000, size=obj.npartitions)
-        rddXLP = rddXLP.map(lambda tpl: obj.Addseed(tpl,randSeed)).persist()
+    #    randSeed = np.random.randint(2000000, size=obj.npartitions)
+        rddXLP = obj.Addgener(rddXLP)
+  
     track=[]        
     for k in range(obj.niterations):
-
+    
         t1= time.time()
-        if obj.sampmode== 'non smooth': 
+        if obj.sampmode== 'non smooth':
             (mingrad,xmin,lambdaMin,iStar) = obj.compute_mingrad_nonsmooth(rddXLP,cinfo,k)
             gap=obj.computegapnonsmooth(cinfo,rddXLP,iStar,mingrad,lambdaMin,k)
         elif obj.sampmode == 'smooth':
             if k==0 :
-                rddXLP = obj.initial_smooth(rddXLP,cinfo)
-         
-                (mingrad,xmin,lambdaMin,iStar)=rddXLP.flatMapValues(lambda t:t).mapValues(lambda ((tx,lam,state,z),index):(z,tx,lam,index)).map(lambda (key,value):value).reduce(maxmin)
-                print '&&',mingrad
-                gap=obj.computegapsmooth(cinfo,rddXLP,iStar,mingrad,lambdaMin,k)
+     #           rddXLP = obj.initial_smooth(rddXLP,cinfo)
+                rddXLP=obj.initz(rddXLP,cinfo)
+                (mingrad,xmin,lambdaMin,iStar)=obj.compute_mingrad_smooth(rddXLP)
+                gap=obj.computegapsmooth(rddXLP,iStar,mingrad,lambdaMin,k)
+        
             else:
-                rddXLP=obj.adapt_z_state(rddXLP,cinfo,beta)
-                (mingrad,xmin,lambdaMin,iStar) = obj.compute_mingrad_smooth(rddXLP,cinfo)
-                print '&&', mingrad
-                gap=obj.computegapsmooth(cinfo,rddXLP,iStar,mingrad,lambdaMin,k)
+                (mingrad,xmin,lambdaMin,iStar)=obj.compute_mingrad_smooth(rddXLP)
+                gap=obj.computegapsmooth(rddXLP,iStar,mingrad,lambdaMin,k)
             #    rddsqueezed=rddXLP.mapValues(lambda (tx,lam,z): (tx,lam,(1.0-beta)*z)).cache()
             #    rddnew=rddXLP.filter(lambda t: random.random()<obj.ptr).mapValues(lambda t: obj.compute_mingrad_smooth(t,cinfo)).cache()
             #    rddJoin=rddsqueezed.leftOuterJoin(rddnew).cache() 
@@ -562,20 +830,28 @@ def mainalgorithm(obj,beta,remmode,remfiles):
         currenttime= time.time()
        # print '##', currenttime - t1
         track.append((obj.computefunc(cinfo), gap,currenttime - start)) 
-        print '**f is:',obj.computefunc(cinfo)   
+       # print '**Function',obj.computefunc(cinfo),'mingrad',mingrad,'gamma',Gamma,k   
         if obj.optgam==1:
             Gamma=obj.computeoptgam(cinfo,xmin,iStar,mingrad)
             if obj.sampmode != 'No drop' and (Gamma <0.0 or Gamma>=1.0):
                 Gamma=0.0
             if obj.sampmode == 'No drop' and (Gamma <0.0 or Gamma>=1.0):
                 Gamma=2.0/(k+3.0)
+   #         print 'Gam',Gamma
         else:
-            Gamma=2.0/(k+3.0)   
+            Gamma=2.0/(k+3.0)
+        print '**Function',obj.computefunc(cinfo),'mingrad',mingrad,'gamma',Gamma,k   
+    #    print '##', Gamma
         cinfo=obj.update_comm_info(cinfo,iStar,mingrad,xmin,Gamma)
         ctime= time.time()
-        rddXLP=obj.update_lambda(rddXLP,iStar,Gamma)
-     
-    safeWrite(rddXLP,'/gss_gpfs_scratch/armin_m/'+args.outfile,dvrdump=False)     
+        if obj.sampmode !='smooth':
+            rddXLP=obj.update_lambda(rddXLP,iStar,Gamma)
+        elif obj.sampmode == 'smooth':
+            rddXLP = obj.update_lam_z(rddXLP, cinfo,iStar,Gamma)
+       
+    np.save(obj.outfile+'.npy', track)
+    rddNew = rddXLP.mapValues(FormForSave).map(lambda (key, value):value).cache()
+    safeWrite(rddNew,'/gss_gpfs_scratch/armin_m/'+args.outfile,dvrdump=False)     
     np.save(obj.outfile+'.npy', track)
         
         
@@ -595,9 +871,11 @@ if __name__=="__main__":
     parser.add_argument("--randseed",type=int,default = 0,help="Random seed")
     parser.add_argument("--remmode",type=int,default = 0,help="Remember or not")
     parser.add_argument("--remfiles",type=str,help="Remember file")
+   # parser.add_argument("--inputP",default='in1by500',type=str)
     args = parser.parse_args()
     random.seed( args.randseed)
-    obj=DoptimalDist(optgam=args.optgam,inputfile=args.inputfile,outfile=args.outfile,npartitions=args.npartitions,niterations=args.niterations,desiredgap=args.desiredgap,beta=args.beta,sampmode=args.sampmode,ptr=args.ptr,randseed=args.randseed,stopiter = args.stopiter)
+    P=np.matrix(np.load('Bin1by500.npy'))
+    obj=AoptimalDist(optgam=args.optgam,inputfile=args.inputfile,outfile=args.outfile,npartitions=args.npartitions,niterations=args.niterations,desiredgap=args.desiredgap,beta=args.beta,sampmode=args.sampmode,ptr=args.ptr,stopiter=args.stopiter, randseed=args.randseed)
 
     mainalgorithm(obj,beta=args.beta, remmode = args.remmode,remfiles=args.remfiles )
     
