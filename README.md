@@ -7,7 +7,7 @@ Usage
 -----
 An example execution is as follows:
 
-	spark-submit --master spark://10.100.9.166:7077   --executor-memory 90g --driver-memory 10g /modularDistFW.py --optgam 1 --inputfile "input" --outfile 'output'   --npartitions 100  --niterations 100  --sampmode 'No drop' --ptr 0.5   --remmode 0   &>log
+spark-submit --master spark://10.100.9.166:7077   --executor-memory 90g --driver-memory 10g /modularDistFW.py --optgam 1 --inputfile "input" --outfile 'output'   --npartitions 100  --niterations 100  --sampmode 'No drop' --ptr 0.5   --remmode 0   &>log
 
 
 This solves the D-Optimal Design problem. Its dataset is loaded from "input". Maximum number of iterations is 100. The level of parallelism is 100. The result will be stored in 'output'
