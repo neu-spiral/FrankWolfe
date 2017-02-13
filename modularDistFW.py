@@ -10,7 +10,7 @@ from cvxopt import lapack,blas,solvers,matrix
 from pyspark import SparkConf, SparkContext
 import json
 import numpy as np
-from numpy.linalg import eigvalsh,inv, norm
+from numpy.linalg import eigvals,inv, norm,det
 import time 
 import argparse
 from  scipy.optimize import newton 
@@ -22,6 +22,11 @@ from scipy import mod
 import random
 import shutil
 from random import Random
+def interpret(x):
+    out = []
+    for i in x:
+        out.append(eval(i)*100.)
+    return cvxopt.matrix(out)
 def Addgrad(tpl):
     p=[]
     for ((tx,lam,state),index) in tpl:
@@ -97,7 +102,7 @@ def CreateRdd(splitindex, iterator):
     return [(splitindex,p)]    
     
 class SparkFW():
-    def __init__(self,optgam,inputfile,outfile,npartitions,niterations,desiredgap,sampmode,beta,ptr,randseed,stopiter):
+    def __init__(self,optgam,inputfile,outfile,npartitions,niterations,desiredgap,sampmode,beta,ptr):
         self.optgam=optgam
         self.inputefile=inputfile
         self.outfile=outfile
@@ -107,8 +112,8 @@ class SparkFW():
         self.sampmode=sampmode
         self.beta=beta
         self.ptr=ptr
-        self.randseed=randseed
-        self.stopiter = stopiter
+   #     self.randseed=randseed
+   #     self.stopiter = stopiter
     def readinput(self,sc):
         rddX=sc.textFile(self.inputefile)
         return rddX
@@ -830,33 +835,36 @@ class Adaboost(SparkFW):
             out = [p,gen]
             return out
 
-        main_rdd = main_rdd.mapValues(lambda t:update(t,zV)).persist()
+        main_rdd = main_rdd.mapValues(lambda t:update(t,zV)).cache()
         return main_rdd
-def mainalgorithm(obj,beta,remmode,remfiles):
+def mainalgorithm(obj,beta):
    # sc=SparkContext()
    # SparkContext.setCheckpointDir("/gss_gpfs_scratch/armin_m/checkp")
     sc=SparkContext()
-    if remmode ==0:
-        rddX=obj.readinput(sc)     
-        N=rddX.count()
-        
-        rddX=rddX.map(lambda x:cvxopt.matrix(eval(x)))
-        d=rddX.map(lambda x:x.size[0]).reduce(lambda x,y:min(x,y))
-        rddX=rddX.map(lambda t:(tuple(t),1.0/N))
-        rddX=rddX.zipWithIndex()
-        rddXLP=rddX.partitionBy(obj.npartitions).mapPartitionsWithIndex(lambda splitindex, iterator:CreateRdd(splitindex, iterator)).persist()
-    else:
-        d=500
-        rddXLP=sc.textFile(remfiles).map(lambda x:eval(x))
-        rddXLP=rddXLP.flatMap(lambda t: t)
-        rddXLP=rddXLP.zipWithIndex()
-        rddXLP=rddXLP.mapPartitionsWithIndex(CreateRdd).persist()
+  #  if remmode ==0:
+    rddX=obj.readinput(sc)     
+    N=rddX.count()
+      #  print 'N is:',N
+       # print rddX.take(1) 
+    rddX=rddX.map(lambda x:cvxopt.matrix(eval(x)))
+        #rddX=rddX.map(lambda x:cvxopt.matrix(eval(x))/norm(eval(x)))
+    d=rddX.map(lambda x:x.size[0]).reduce(lambda x,y:min(x,y))
+    rddX=rddX.map(lambda t:(tuple(t),1.0/N))
+    rddX=rddX.zipWithIndex()
+       # rddX=sc.textFile(obj.inputefile).map(lambda x:eval(x))
+    rddXLP=rddX.partitionBy(obj.npartitions).mapPartitionsWithIndex(lambda splitindex, iterator:CreateRdd(splitindex, iterator)).persist()
+   # else:
+   #     d=500
+   #     rddXLP=sc.textFile(remfiles).map(lambda x:eval(x))
+   #     rddXLP=rddXLP.flatMap(lambda t: t)
+   #     rddXLP=rddXLP.zipWithIndex()
+   #     rddXLP=rddXLP.partitionBy(obj.npartitions).mapPartitionsWithIndex(lambda splitindex, iterator:CreateRdd(splitindex, iterator)).persist()
+        #rddXLP=rddXLP.mapPartitionsWithIndex(CreateRdd).persist()
         
     start = time.time()
     cinfo=obj.gen_comm_info(rddXLP)
-    
-    if remmode ==1:
-        start = time.time()
+  #  if remmode ==1:
+    start = time.time()
     if obj.sampmode == 'smooth':
     #    randSeed = np.random.randint(2000000, size=obj.npartitions)
         rddXLP = obj.Addgener(rddXLP)
@@ -865,6 +873,7 @@ def mainalgorithm(obj,beta,remmode,remfiles):
     for k in range(obj.niterations):
     
         t1= time.time()
+    #    print 'Eigenvalues',det(cinfo),eigvals(cinfo)
         if obj.sampmode== 'non smooth':
             (mingrad,xmin,lambdaMin,iStar) = obj.compute_mingrad_nonsmooth(rddXLP,cinfo,k)
             gap=obj.computegapnonsmooth(cinfo,rddXLP,iStar,mingrad,lambdaMin,k)
@@ -889,20 +898,20 @@ def mainalgorithm(obj,beta,remmode,remfiles):
           #  print '##mingrad', mingrad, '**istar', iStar
             gap=obj.computegap(cinfo,rddXLP,iStar,mingrad,lambdaMin)
         currenttime= time.time()
-       # print '##', currenttime - t1
-        track.append((obj.computefunc(cinfo), gap,currenttime - start)) 
-       # print '**Function',obj.computefunc(cinfo),'mingrad',mingrad,'gamma',Gamma,k   
+        print '##', currenttime - t1
+        current_func = obj.computefunc(cinfo)
+        track.append((current_func, gap,currenttime - start))
+    #    if current_func < stopfun:
+    #        break   
         if obj.optgam==1:
             Gamma=obj.computeoptgam(cinfo,xmin,iStar,mingrad)
             if obj.sampmode != 'No drop' and (Gamma <0.0 or Gamma>=1.0):
                 Gamma=0.0
             if obj.sampmode == 'No drop' and (Gamma <0.0 or Gamma>=1.0):
                 Gamma=2.0/(k+3.0)
-   #         print 'Gam',Gamma
         else:
             Gamma=2.0/(k+3.0)
-        print '**Function',obj.computefunc(cinfo),'mingrad',mingrad,'gamma',Gamma,k   
-    #    print '##', Gamma
+        print '**Function',current_func,'mingrad',mingrad,'gamma',Gamma,gap  
         cinfo=obj.update_comm_info(cinfo,iStar,mingrad,xmin,Gamma)
         ctime= time.time()
         if obj.sampmode !='smooth':
@@ -918,25 +927,29 @@ def mainalgorithm(obj,beta,remmode,remfiles):
         
 if __name__=="__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--optgam",default=1,type=int,help="Optimize Gamma or not")
-    parser.add_argument("--inputfile",type=str,help="inputfile")
-    parser.add_argument("--outfile",type=str,help="Outfile")
-    parser.add_argument("--npartitions",default=2,type=int,help="Number of partitions")
-    parser.add_argument("--niterations",default=100,type=int,help="Number of iterations")
-    parser.add_argument("--beta",default=0.5,type=float,help="beta")
-    parser.add_argument("--sampmode",default='non smooth',type=str,help="Number of iterations")
-    parser.add_argument("--desiredgap",default=1.e-7,type=float,help="Desired gap")
-    parser.add_argument("--ptr",default=0.0005,type=float,help="Ptr")
+    parser.add_argument("--optgam",default=1,type=int,help="If it is 1, then the step size is set through line minimization rule. If it is 0 the step size is set through a diminishing step size.")
+    parser.add_argument("--inputfile",type=str,help="Load the dataset from inputfile.")
+    parser.add_argument("--outfile",type=str,help="Store the results in outfile.")
+    parser.add_argument("--npartitions",default=2,type=int,help="It sets the level of parallelism.")
+    parser.add_argument("--niterations",default=100,type=int,help="Maximum number of iteration.")
+    parser.add_argument("--beta",default=0.5,type=float,help="beta parameter in Smoothened FW.")
+    parser.add_argument("--sampmode",default='non smooth',type=str,help="It can get 3 values. 'No drop' executes Parallel FW, 'non smooth' executes Sampled FW, and 'smooth' executes Smoothened FW.")
+    parser.add_argument("--desiredgap",default=1.e-7,type=float,help="The algorithm will stop once the duality gap is smaller then this value.")
+  #  parser.add_argument("--stopfun",type=float, help="Stop once you get there")
+    parser.add_argument("--ptr",default=0.5,type=float,help="Sampling ratio for Sampled FW and Smoothened FW.")
    # parser.add_argument("--keeptrace",default=1,type=int,help="keep trace")
-    parser.add_argument("--stopiter",default=10,type=int,help="Stop and save")
-    parser.add_argument("--randseed",type=int,default = 0,help="Random seed")
-    parser.add_argument("--remmode",type=int,default = 0,help="Remember or not")
-    parser.add_argument("--remfiles",type=str,help="Remember file")
+   # parser.add_argument("--stopiter",default=10,type=int,help="Stop and save")
+   # parser.add_argument("--randseed",type=int,default = 0,help="Random seed")
+   # parser.add_argument("--remmode",type=int,default = 0,help="Remember or not")
+  #  parser.add_argument("--remfiles",type=str,help="Remember file")
    # parser.add_argument("--inputP",default='in1by500',type=str)
+    parser.add_argument("--Pfile",default='90by1.npy',type=str,help="Loads P parameter for Convex Approximation")
     args = parser.parse_args()
-    random.seed( args.randseed)
-    P=np.matrix(np.load('In500by1.npy'))
-    obj=CVXapprox(P=P,optgam=args.optgam,inputfile=args.inputfile,outfile=args.outfile,npartitions=args.npartitions,niterations=args.niterations,desiredgap=args.desiredgap,beta=args.beta,sampmode=args.sampmode,ptr=args.ptr,stopiter=args.stopiter, randseed=args.randseed)
+   # random.seed( args.randseed)
+    #P=np.matrix(np.load('HEPMASS_point.npy'))/norm(np.load('HEPMASS_point.npy'))
+   # P=np.load(args.Pfile)
+   # P=np.matrix(np.load('HEPMASS_point.npy'))
+    obj=AoptimalDist(optgam=args.optgam,inputfile=args.inputfile,outfile=args.outfile,npartitions=args.npartitions,sampmode=args.sampmode,niterations=args.niterations,desiredgap=args.desiredgap,beta=args.beta,ptr=args.ptr)
 
-    mainalgorithm(obj,beta=args.beta, remmode = args.remmode,remfiles=args.remfiles )
+    mainalgorithm(obj,beta=args.beta)
     
