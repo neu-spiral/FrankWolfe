@@ -58,9 +58,5 @@ optional arguments:
 		 
 
 
-Using `pydoc`
-------------
-
-Type `pydoc CacheNetwork` to see documentation for the `CacheNetwork` class; same applies to other `.py` files.
 
 
