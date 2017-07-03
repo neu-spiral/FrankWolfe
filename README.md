@@ -1,7 +1,7 @@
  Distributed FW
 ===========================
 
-It is the implementation of the distributed Frank-Wolfe algorithm presented in "Distributing Frank-Wolfe via Map-Reduce", A.Moharrer and S. Ioannidis. Please cite this paper if you intend to use this code for your research.
+It is the implementation of the distributed Frank-Wolfe algorithm. Please cite this if you intend to use this code for your research.
 
 Usage
 -----
