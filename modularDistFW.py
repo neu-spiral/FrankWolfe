@@ -22,6 +22,17 @@ from scipy import mod
 import random
 import shutil
 from random import Random
+def makeP(Input,sol,sc,P):
+    X = sc.textFile(Input).map(lambda l:tuple(eval(l))).zipWithIndex().map(lambda (vec,i):(i,vec)).partitionBy(P).cache()
+    lam_star = sc.textFile(sol).map(lambda t:eval(t)).map(lambda t:t[0]).zipWithIndex().filter(lambda (vec,i):vec!=0.).map(lambda (vec,i):(i,vec)).partitionBy(P).cache()
+    np.random.seed(1993)
+    (ind,tup) = X.take(1)[0]
+    d = len(tup)
+    noise = 0.1*np.matrix(np.random.rand(d,1)).reshape(d,1) 
+    P = X.join(lam_star).map(lambda (i,(tx,lami)):np.matrix(tx).T*lami).reduce(lambda x,y:x+y)
+    return P+noise
+    
+    
 def interpret(x):
     out = []
     for i in x:
@@ -102,7 +113,7 @@ def CreateRdd(splitindex, iterator):
     return [(splitindex,p)]    
     
 class SparkFW():
-    def __init__(self,optgam,inputfile,outfile,npartitions,niterations,desiredgap,sampmode,beta,ptr):
+    def __init__(self,optgam,inputfile,outfile,npartitions,niterations,desiredgap,sampmode,beta,ptr,randseed,stopiter):
         self.optgam=optgam
         self.inputefile=inputfile
         self.outfile=outfile
@@ -112,8 +123,8 @@ class SparkFW():
         self.sampmode=sampmode
         self.beta=beta
         self.ptr=ptr
-   #     self.randseed=randseed
-   #     self.stopiter = stopiter
+        self.randseed=randseed
+        self.stopiter = stopiter
     def readinput(self,sc):
         rddX=sc.textFile(self.inputefile)
         return rddX
@@ -329,6 +340,7 @@ class DoptimalDist(SparkFW):
 class AoptimalDist(SparkFW):
     def gen_comm_info(self,main_rdd):
         A=main_rdd.flatMapValues(lambda iterator:ComputeA(iterator)).map(lambda (key,value):value).reduce(lambda x,y:x+y)
+        print A
         ainv= inv(A)    
         ainv2= ainv*ainv
         return ainv,ainv2
@@ -607,6 +619,9 @@ class CVXapprox(SparkFW):
     def update_comm_info(self,cinfo,iStar,mingrad,txmin,Gamma):
        R=cinfo
        return (1-Gamma)*R+Gamma*(np.matrix(txmin).T-self.P)
+    def Updatecommoninfo_l1(self,cinfo,txmin,Gamma,iStar,K,s_star):
+        R=cinfo
+        return (1-Gamma)*R+Gamma*(K*s_star*np.matrix(txmin).T-self.P)
     def compute_mingrad(self,main_rdd,cinfo):
         R = cinfo
         def CompMingrad(tpl):
@@ -616,7 +631,29 @@ class CVXapprox(SparkFW):
          
             return p  
         (mingrad,xmin,lambdaMin,iStar)=main_rdd.flatMapValues(CompMingrad).map(lambda (key, value):value).reduce(maxmin)        
-        return (mingrad,xmin,lambdaMin,iStar) 
+        return (mingrad,xmin,lambdaMin,iStar)
+    def compute_mingrad_l1(self,main_rdd,cinfo,K):
+        R = cinfo
+        def maxmin_l1(tpl1,tpl2):
+            (z1,x1,lam1,i1)=tpl1
+            (z2,x2,lam2,i2)=tpl2
+            zt = max(abs(z1),abs(z2))
+            if zt>abs(z2):
+                out = (z1,x1,lam1,i1)
+            else:
+                out = (z2,x2,lam2,i2)
+            return out
+                    
+        def CompMingrad(tpl):
+            p=[]
+            for ((tx,lam),index) in tpl:
+                p.append(((np.matrix(tx)*R)[0,0],tx,lam,index))
+
+            return p
+        (mingrad,xmin,lambdaMin,iStar)=main_rdd.flatMapValues(CompMingrad).map(lambda (key, value):value).reduce(maxmin_l1)
+        s_star = -np.sign(mingrad)
+        return (mingrad,xmin,lambdaMin,iStar,s_star)
+     
     def initz(self,rddXLP,cinfo):
         R = cinfo
         def addz(R,t):
@@ -641,11 +678,15 @@ class CVXapprox(SparkFW):
         b=(R.T*R)[0,0]
         c=((np.matrix(xmin).T-self.P).T*R)[0,0]
         return ((b-c)/(a+b-2.0*c))
-        
+    def computeoptgam_l1(self,cinfo,xmin,iStar,mingrad,K,s_star):
+        R=cinfo
+        AXKStar = R+self.P-K*s_star*np.matrix(xmin).T
+        return float(R.T*AXKStar)/float(AXKStar.T*AXKStar)
+ 
     def computefunc(self,cinfo): 
         R = cinfo
         f = float( R.T*R )
-        return f
+        return 0.5*f
     def computegapnonsmooth(self,cinfo,main_rdd,iStar,mingrad,lambdaMin,k):
         R = cinfo
         def CompGap(tpl,lambdaMin,mingrad,iStar):
@@ -668,7 +709,19 @@ class CVXapprox(SparkFW):
                     p.append((lambdaMin-1)*mingrad)
             return p   
         gap=main_rdd.flatMapValues(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).map(lambda (key, value):value).reduce(lambda x,y:x+y)
-        return gap 
+        return gap
+    def computegap_l1(self,cinfo,main_rdd,iStar,mingrad,lambdaMin,K,s_star): 
+        R = cinfo
+        def CompGap(tpl,lambdaMin,mingrad,iStar):
+            p=[]
+            for ((tx,lam),index) in tpl:
+                if index!=iStar:
+                    p.append((np.matrix(tx)*R*lam)[0,0])
+                else:
+                    p.append((lambdaMin-s_star*K)*mingrad)
+            return p
+        gap=main_rdd.flatMapValues(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).map(lambda (key, value):value).reduce(lambda x,y:x+y)
+        return gap
     def update_lam_z(self, main_rdd, cinfo,iStar,Gamma):
         R = cinfo
         def update(t, R):
@@ -691,6 +744,17 @@ class CVXapprox(SparkFW):
 
         main_rdd = main_rdd.mapValues(lambda t:update(t,R)).persist()
         return main_rdd
+    def update_lambda_l1(self,main_rdd,iStar,s_star,Gamma,K):
+        def Update_l1(tpl,iStar,s_star,K,Gamma):
+            p=[]
+            for ((tx,lam),index) in tpl:
+                if index!=iStar:
+                    p.append(((tx,(1.0-Gamma)*lam),index))
+                else:
+                    p.append(((tx,(1.0-Gamma)*lam+Gamma*s_star*K),index))
+            return p
+        main_rdd=main_rdd.mapValues(lambda tpl:Update_l1(tpl,iStar,s_star,K,Gamma)).cache() 
+        return main_rdd   
 class Adaboost(SparkFW):
     def __init__(self,r,C,optgam,inputfile,outfile,npartitions,niterations,desiredgap,sampmode,beta,ptr,stopiter,randseed):
         self.r = r
@@ -835,43 +899,45 @@ class Adaboost(SparkFW):
             out = [p,gen]
             return out
 
-        main_rdd = main_rdd.mapValues(lambda t:update(t,zV)).cache()
+        main_rdd = main_rdd.mapValues(lambda t:update(t,zV)).persist()
         return main_rdd
-def mainalgorithm(obj,beta):
+def mainalgorithm(obj,beta,remmode,remfiles, stopfun,sc,K=None):
    # sc=SparkContext()
    # SparkContext.setCheckpointDir("/gss_gpfs_scratch/armin_m/checkp")
-    sc=SparkContext()
-  #  if remmode ==0:
-    rddX=obj.readinput(sc)     
-    N=rddX.count()
-      #  print 'N is:',N
+    if remmode ==0:
+        rddX=obj.readinput(sc)
+         
+        N=rddX.count()
+        print 'N is:',N
        # print rddX.take(1) 
-    rddX=rddX.map(lambda x:cvxopt.matrix(eval(x)))
+        rddX=rddX.map(lambda x:cvxopt.matrix(eval(x))).cache()
         #rddX=rddX.map(lambda x:cvxopt.matrix(eval(x))/norm(eval(x)))
-    d=rddX.map(lambda x:x.size[0]).reduce(lambda x,y:min(x,y))
-    rddX=rddX.map(lambda t:(tuple(t),1.0/N))
-    rddX=rddX.zipWithIndex()
+        d=rddX.map(lambda x:x.size[0]).reduce(lambda x,y:min(x,y))
+        rddX=rddX.map(lambda t:(tuple(t),1./N))\
+                 .zipWithIndex()
+        
        # rddX=sc.textFile(obj.inputefile).map(lambda x:eval(x))
-    rddXLP=rddX.partitionBy(obj.npartitions).mapPartitionsWithIndex(lambda splitindex, iterator:CreateRdd(splitindex, iterator)).persist()
-   # else:
-   #     d=500
-   #     rddXLP=sc.textFile(remfiles).map(lambda x:eval(x))
-   #     rddXLP=rddXLP.flatMap(lambda t: t)
-   #     rddXLP=rddXLP.zipWithIndex()
-   #     rddXLP=rddXLP.partitionBy(obj.npartitions).mapPartitionsWithIndex(lambda splitindex, iterator:CreateRdd(splitindex, iterator)).persist()
+        rddXLP=rddX.partitionBy(obj.npartitions).mapPartitionsWithIndex(lambda splitindex, iterator:CreateRdd(splitindex, iterator)).cache()
+        #print rddXLP.values().flatMap(lambda t:t).map(lambda  ((tx,lam),index): np.matrix(tx).T*lam).reduce(lambda x,y:x+y)-obj.P
+    else:
+        rddXLP=sc.textFile(remfiles).map(lambda x:eval(x))
+        rddXLP=rddXLP.flatMap(lambda t: t).partitionBy(100)
+        rddXLP=rddXLP.zipWithIndex()
+        rddXLP=rddXLP.partitionBy(obj.npartitions).mapPartitionsWithIndex(lambda splitindex, iterator:CreateRdd(splitindex, iterator)).persist()
         #rddXLP=rddXLP.mapPartitionsWithIndex(CreateRdd).persist()
         
     start = time.time()
+  #  d = 100
     cinfo=obj.gen_comm_info(rddXLP)
-  #  if remmode ==1:
-    start = time.time()
+    if remmode ==1:
+        start = time.time()
     if obj.sampmode == 'smooth':
     #    randSeed = np.random.randint(2000000, size=obj.npartitions)
         rddXLP = obj.Addgener(rddXLP)
   
     track=[]        
     for k in range(obj.niterations):
-    
+        #print "The constraint",rddXLP.values().flatMap(lambda t:t).map(lambda ((tx,lam),ind):lam).reduce(lambda x,y:x+y) 
         t1= time.time()
     #    print 'Eigenvalues',det(cinfo),eigvals(cinfo)
         if obj.sampmode== 'non smooth':
@@ -890,35 +956,66 @@ def mainalgorithm(obj,beta):
             #    rddsqueezed=rddXLP.mapValues(lambda (tx,lam,z): (tx,lam,(1.0-beta)*z)).cache()
             #    rddnew=rddXLP.filter(lambda t: random.random()<obj.ptr).mapValues(lambda t: obj.compute_mingrad_smooth(t,cinfo)).cache()
             #    rddJoin=rddsqueezed.leftOuterJoin(rddnew).cache() 
-            #    (mingrad,xmin,lambdaMin,iStar) = rddJoin.mapValues(joinRDDs).map(lambda (index,(tx,lam,z)):(z,tx,lam,index)).reduce(maxmin)
+          
+#    (mingrad,xmin,lambdaMin,iStar) = rddJoin.mapValues(joinRDDs).map(lambda (index,(tx,lam,z)):(z,tx,lam,index)).reduce(maxmin)
             #    gap=obj.computegapsmooth(cinfo,rddXLP,iStar,mingrad,lambdaMin)
             
-        else:
+        elif obj.sampmode == "No Drops":
             (mingrad,xmin,lambdaMin,iStar)=obj.compute_mingrad(rddXLP,cinfo)
           #  print '##mingrad', mingrad, '**istar', iStar
             gap=obj.computegap(cinfo,rddXLP,iStar,mingrad,lambdaMin)
+            g = 0.
+        elif obj.sampmode == "Lasso":
+            (mingrad,xmin,lambdaMin,iStar,s_star)=obj.compute_mingrad_l1(rddXLP,cinfo,K)
+    #        gap=obj.computegap_l1(cinfo,rddXLP,iStar,mingrad,lambdaMin,K,s_star)
+            g = rddXLP.values().flatMap(lambda t:t).map(lambda ((tx,lam),ind):abs(lam)).reduce(lambda x,y:x+y)
         currenttime= time.time()
-        print '##', currenttime - t1
         current_func = obj.computefunc(cinfo)
-        track.append((current_func, gap,currenttime - start))
+        
+        track.append((current_func, g+current_func,currenttime - start))
     #    if current_func < stopfun:
     #        break   
         if obj.optgam==1:
-            Gamma=obj.computeoptgam(cinfo,xmin,iStar,mingrad)
-            if obj.sampmode != 'No drop' and (Gamma <0.0 or Gamma>=1.0):
-                Gamma=0.0
-            if obj.sampmode == 'No drop' and (Gamma <0.0 or Gamma>=1.0):
-                Gamma=2.0/(k+3.0)
+             
+            if obj.sampmode == 'smooth' or obj.sampmode == 'non smooth':
+                Gamma = obj.computeoptgam(cinfo,xmin,iStar,mingrad)
+                if Gamma <0.0 or Gamma>=1.0:
+                    Gamma=0.0
+            elif  obj.sampmode == 'Lasso':
+                Gamma = obj.computeoptgam_l1(cinfo,xmin,iStar,mingrad,K,s_star)
+                if Gamma<0. or Gamma>=1.:
+                    Gamma = 1./(k+1.) 
+            else:
+                Gamma = obj.computeoptgam(cinfo,xmin,iStar,mingrad)
+                if Gamma<0. or Gamma>=1.:
+                    Gamma = 1./(k+1.)
+      #      if (obj.sampmode == 'smooth' or obj.sampmode == 'non smooth' )and (Gamma <0.0 or Gamma>=1.0):
+      #          Gamma=0.0
+       #     if obj.sampmode == 'No drop' and (Gamma <0.0 or Gamma>=1.0):
+       #         Gamma=2.0/(k+3.0)
         else:
             Gamma=2.0/(k+3.0)
-        print '**Function',current_func,'mingrad',mingrad,'gamma',Gamma,gap  
-        cinfo=obj.update_comm_info(cinfo,iStar,mingrad,xmin,Gamma)
-        ctime= time.time()
-        if obj.sampmode !='smooth':
+        print '**Function',current_func,current_func+g,'istar',iStar,'mingrad',mingrad,'iteration: ',k,'elspased time is: ',"gamma",Gamma,"g",g,time.time()-start 
+        
+        
+        if obj.sampmode =='No Drops' or  obj.sampmode =='non smooth':
+            cinfo=obj.update_comm_info(cinfo,iStar,mingrad,xmin,Gamma)
             rddXLP=obj.update_lambda(rddXLP,iStar,Gamma)
         elif obj.sampmode == 'smooth':
+            cinfo=obj.update_comm_info(cinfo,iStar,mingrad,xmin,Gamma)
             rddXLP = obj.update_lam_z(rddXLP, cinfo,iStar,Gamma)
-       
+        elif obj.sampmode == "Lasso":
+            cinfo=obj.Updatecommoninfo_l1(cinfo,xmin,Gamma,iStar,K,s_star)
+            rddXLP=obj.update_lambda_l1(rddXLP,iStar,s_star,Gamma,K)
+        else:
+            break
+            print "UNRECOGNIZED MOD!"   
+       # if k%100==0 and k>0:
+       #     np.save(obj.outfile+str(k)+'iters.npy', track)
+       #     rddNew = rddXLP.mapValues(FormForSave).map(lambda (key, value):value).cache()
+       #     safeWrite(rddNew,'/gss_gpfs_scratch/armin_m/'+args.outfile+str(k)+'iters',dvrdump=False)
+     #       rddXLP.checkpoint(i)
+  #  print rddXLP.values().flatMap(lambda t:t).map(lambda ((tx,lam),ind):abs(lam)).reduce(lambda x,y:x+y)
     np.save(obj.outfile+'.npy', track)
     rddNew = rddXLP.mapValues(FormForSave).map(lambda (key, value):value).cache()
     safeWrite(rddNew,'/gss_gpfs_scratch/armin_m/'+args.outfile,dvrdump=False)     
@@ -927,29 +1024,45 @@ def mainalgorithm(obj,beta):
         
 if __name__=="__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--optgam",default=1,type=int,help="If it is 1, then the step size is set through line minimization rule. If it is 0 the step size is set through a diminishing step size.")
-    parser.add_argument("--inputfile",type=str,help="Load the dataset from inputfile.")
-    parser.add_argument("--outfile",type=str,help="Store the results in outfile.")
-    parser.add_argument("--npartitions",default=2,type=int,help="It sets the level of parallelism.")
-    parser.add_argument("--niterations",default=100,type=int,help="Maximum number of iteration.")
-    parser.add_argument("--beta",default=0.5,type=float,help="beta parameter in Smoothened FW.")
-    parser.add_argument("--sampmode",default='non smooth',type=str,help="It can get 3 values. 'No drop' executes Parallel FW, 'non smooth' executes Sampled FW, and 'smooth' executes Smoothened FW.")
-    parser.add_argument("--desiredgap",default=1.e-7,type=float,help="The algorithm will stop once the duality gap is smaller then this value.")
-  #  parser.add_argument("--stopfun",type=float, help="Stop once you get there")
-    parser.add_argument("--ptr",default=0.5,type=float,help="Sampling ratio for Sampled FW and Smoothened FW.")
+    parser.add_argument("--optgam",default=1,type=int,help="Optimize Gamma or not")
+    parser.add_argument("--inputfile",type=str,help="inputfile")
+    parser.add_argument("--sol",type=str,help="sol")
+    parser.add_argument("--outfile",type=str,help="Outfile")
+    parser.add_argument("--npartitions",default=2,type=int,help="Number of partitions")
+    parser.add_argument("--niterations",default=100,type=int,help="Number of iterations")
+    parser.add_argument("--beta",default=0.5,type=float,help="beta")
+    parser.add_argument("--sampmode",default='No Drops',type=str,help="Number of iterations")
+    parser.add_argument("--desiredgap",default=1.e-7,type=float,help="Desired gap")
+    parser.add_argument("--stopfun",type=float, help="Stop once you get there")
+    parser.add_argument("--ptr",default=0.0005,type=float,help="Ptr")
    # parser.add_argument("--keeptrace",default=1,type=int,help="keep trace")
-   # parser.add_argument("--stopiter",default=10,type=int,help="Stop and save")
-   # parser.add_argument("--randseed",type=int,default = 0,help="Random seed")
-   # parser.add_argument("--remmode",type=int,default = 0,help="Remember or not")
-  #  parser.add_argument("--remfiles",type=str,help="Remember file")
+    parser.add_argument("--stopiter",default=10,type=int,help="Stop and save")
+    parser.add_argument("--randseed",type=int,default = 0,help="Random seed")
+    parser.add_argument("--remmode",type=int,default = 0,help="Remember or not")
+    parser.add_argument("--remfiles",type=str,help="Remember file")
+    parser.add_argument("--K",type=float,help="K")
    # parser.add_argument("--inputP",default='in1by500',type=str)
-    parser.add_argument("--Pfile",default='90by1.npy',type=str,help="Loads P parameter for Convex Approximation")
+   # args = parser.parse_args()
+    verbosity_group = parser.add_mutually_exclusive_group(required=False)
+    verbosity_group.add_argument('--verbose', dest='verbose', action='store_true')
+    verbosity_group.add_argument('--silent', dest='verbose', action='store_false')
+    parser.set_defaults(verbose=True)
     args = parser.parse_args()
-   # random.seed( args.randseed)
-    #P=np.matrix(np.load('HEPMASS_point.npy'))/norm(np.load('HEPMASS_point.npy'))
-   # P=np.load(args.Pfile)
-   # P=np.matrix(np.load('HEPMASS_point.npy'))
-    obj=AoptimalDist(optgam=args.optgam,inputfile=args.inputfile,outfile=args.outfile,npartitions=args.npartitions,sampmode=args.sampmode,niterations=args.niterations,desiredgap=args.desiredgap,beta=args.beta,ptr=args.ptr)
+    random.seed( args.randseed)
+    sc=SparkContext()
+    #sc.setCheckpointDir("/gss_gpfs_scratch/armin_m/checkp")
+    if not args.verbose :
+        sc.setLogLevel("ERROR")
+    
+   # P = makeP(args.inputfile,args.sol,sc,args.npartitions)
+   # np.save(args.outfile,P)
+  #  np.save('sol_001.npy',P) 
+  #  R= np.matrix(np.load(args.sol)).reshape(1000,1)
+  #  R = np.matrix([R,R,R,R,R]).reshape(500,1)
+  #  R=np.matrix(np.load("bin100vec.npy")).T
+   
+ #   P=np.matrix(np.load('vec100.npy')).T
+    obj= AoptimalDist(optgam=args.optgam,inputfile=args.inputfile,outfile=args.outfile,npartitions=args.npartitions,niterations=args.niterations,desiredgap=args.desiredgap,beta=args.beta,sampmode=args.sampmode,ptr=args.ptr,stopiter=args.stopiter, randseed=args.randseed)
 
-    mainalgorithm(obj,beta=args.beta)
+    mainalgorithm(obj,beta=args.beta, remmode = args.remmode,remfiles=args.remfiles,sc=sc, stopfun=args.stopfun,K=args.K)
     
