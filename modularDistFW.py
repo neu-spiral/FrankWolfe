@@ -88,18 +88,16 @@ def CreateRdd(splitindex, iterator):
     return [(splitindex,p)]    
     
 class SparkFW():
-    def __init__(self,optgam,inputfile,outfile,npartitions,niterations,desiredgap,sampmode,beta,ptr,randseed,stopiter):
+    def __init__(self,optgam,inputfile,outfile,npartitions,niterations,sampmode,beta,ptr,randseed):
         self.optgam=optgam
         self.inputefile=inputfile
         self.outfile=outfile
         self.npartitions=npartitions
         self.niterations=niterations
-        self.desiredgap=desiredgap
         self.sampmode=sampmode
         self.beta=beta
         self.ptr=ptr
         self.randseed=randseed
-        self.stopiter = stopiter
     def readinput(self,sc):
         """Given the Spark Context as sc it creats the RDD from the input file."""
         rddX=sc.textFile(self.inputefile)
@@ -541,18 +539,16 @@ class EoptimalDist(SparkFW):
         gap=main_rdd.flatMapValues(lambda t:t).flatMapValues(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).map(lambda (key, value):value).reduce(lambda x,y:x+y)
         return gap
 class CVXapprox(SparkFW):
-    def __init__(self,P,optgam,inputfile,outfile,npartitions,niterations,desiredgap,sampmode,beta,ptr,stopiter,randseed):
+    def __init__(self,P,optgam,inputfile,outfile,npartitions,niterations,sampmode,beta,ptr,randseed):
         self.P = P
         self.optgam=optgam
         self.inputefile=inputfile
         self.outfile=outfile
         self.npartitions=npartitions
         self.niterations=niterations
-        self.desiredgap=desiredgap
         self.sampmode=sampmode
         self.beta=beta
         self.ptr=ptr
-        self.stopiter=stopiter
         self.randseed=randseed
     def gen_comm_info(self,main_rdd):
         def genelem(tpl):
@@ -703,7 +699,7 @@ class CVXapprox(SparkFW):
         main_rdd=main_rdd.mapValues(lambda tpl:Update_l1(tpl,iStar,s_star,K,Gamma)).cache() 
         return main_rdd   
 class Adaboost(SparkFW):
-    def __init__(self,r,C,optgam,inputfile,outfile,npartitions,niterations,desiredgap,sampmode,beta,ptr,stopiter,randseed):
+    def __init__(self,r,C,optgam,inputfile,outfile,npartitions,niterations,sampmode,beta,ptr,randseed):
         self.r = r
         self.C = C
         self.optgam=optgam
@@ -711,11 +707,9 @@ class Adaboost(SparkFW):
         self.outfile=outfile
         self.npartitions=npartitions
         self.niterations=niterations
-        self.desiredgap=desiredgap
         self.sampmode=sampmode
         self.beta=beta
         self.ptr=ptr
-        self.stopiter=stopiter
         self.ranseed=randseed     
     def  gen_comm_info(self,main_rdd):
         def cominfo(tpl):
@@ -853,7 +847,7 @@ class Adaboost(SparkFW):
 
         main_rdd = main_rdd.mapValues(lambda t:update(t,zV)).persist()
         return main_rdd
-def mainalgorithm(obj,beta,remmode,remfiles, stopfun,sc,K=None):
+def mainalgorithm(obj,beta,remmode,remfiles,sc,K=None):
     if remmode ==0:
         rddX=obj.readinput(sc)
          
@@ -946,23 +940,19 @@ def mainalgorithm(obj,beta,remmode,remfiles, stopfun,sc,K=None):
         
 if __name__=="__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--optgam",default=1,type=int,help="Optimize Gamma or not")
-    parser.add_argument("--inputfile",type=str,help="inputfile")
-    parser.add_argument("--sol",type=str,help="sol")
-    parser.add_argument("--outfile",type=str,help="Outfile")
+    parser.add_argument("--optgam",default=1,type=int,help="If this value is 1 the setp size is found from Eq (6), otherwise it is set to a diminshing step size.")
+    parser.add_argument("--inputfile",type=str,help="The directory which holds the input files in text form.")
+    parser.add_argument("--outfile",type=str,help="The iutput file, which stires the objective value, duality gap, and running time of the algorithm for each iteration.")
     parser.add_argument("--npartitions",default=2,type=int,help="Number of partitions")
     parser.add_argument("--niterations",default=100,type=int,help="Number of iterations")
-    parser.add_argument("--beta",default=0.5,type=float,help="beta")
-    parser.add_argument("--sampmode",default='No Drops',type=str,help="Number of iterations")
-    parser.add_argument("--desiredgap",default=1.e-7,type=float,help="Desired gap")
-    parser.add_argument("--stopfun",type=float, help="Stop once you get there")
-    parser.add_argument("--ptr",default=0.0005,type=float,help="Ptr")
-    parser.add_argument("--stopiter",default=10,type=int,help="Stop and save")
+    parser.add_argument("--beta",default=0.5,type=float,help="beta used in Smoothened FW.")
+    parser.add_argument("--sampmode",default='No Drops',type=str,help="It specifies the type of the algorithm. The options are, No Drops, non smooth, smooth, and Lasso  which run parallel FW, Sampled FW, Smoothened FW, and parallel FW for LASSO problem, respectively.")
+    parser.add_argument("--ptr",default=0.0005,type=float,help="Sampling ratio used in Sampled FW and Smoothened FW.")
     parser.add_argument("--randseed",type=int,default = 0,help="Random seed")
-    parser.add_argument("--problem",type=str,help="Problem")
-    parser.add_argument("--remmode",type=int,default = 0,help="Remember or not")
-    parser.add_argument("--remfiles",type=str,help="Remember file")
-    parser.add_argument("--K",type=float,help="K")
+    parser.add_argument("--problem",type=str,help="The type of the problem. Give DoptimalDist, AoptimalDist, CVXapprox, or Adaboost, to solve D-optimal Design, A-optimal Design, Convex Approximation, or AdaBoost, respectively.")
+    parser.add_argument("--remmode",type=int,default = 0,help="If it is 0 then the algorithm starts from the beginning. Otherwise it will continue the algorithm from where the algorihtm stopped. It is helpful when the job crashes. ")
+    parser.add_argument("--remfiles",type=str,help="The input file that keeps the RDD, It will continue from this point. Use when remmode is 1.")
+    parser.add_argument("--K",type=float,help="The budget K for the l1 constraint. Use when sampmode is LASSO")
     parser.add_argument("--inputP",default='in1by500',type=str)
     parser.add_argument("--C",type=str)
     verbosity_group = parser.add_mutually_exclusive_group(required=False)
@@ -980,12 +970,12 @@ if __name__=="__main__":
     if args.problem == "Adaboost":
         R=np.matrix(np.load(args.inputP)).T
         C = eval(args.C)
-        obj= problem_type(r=R,C=C,optgam=args.optgam,inputfile=args.inputfile,outfile=args.outfile,npartitions=args.npartitions,niterations=args.niterations,desiredgap=args.desiredgap,beta=args.beta,sampmode=args.sampmode,ptr=args.ptr,stopiter=args.stopiter, randseed=args.randseed)
+        obj= problem_type(r=R,C=C,optgam=args.optgam,inputfile=args.inputfile,outfile=args.outfile,npartitions=args.npartitions,niterations=args.niterations,beta=args.beta,sampmode=args.sampmode,ptr=args.ptr, randseed=args.randseed)
     elif args.problem == "CVXapprox":
         P =np.matrix(np.load(args.inputP)).T
-        obj= problem_type(P=P,optgam=args.optgam,inputfile=args.inputfile,outfile=args.outfile,npartitions=args.npartitions,niterations=args.niterations,desiredgap=args.desiredgap,beta=args.beta,sampmode=args.sampmode,ptr=args.ptr,stopiter=args.stopiter, randseed=args.randseed)
+        obj= problem_type(P=P,optgam=args.optgam,inputfile=args.inputfile,outfile=args.outfile,npartitions=args.npartitions,niterations=args.niterations,beta=args.beta,sampmode=args.sampmode,ptr=args.ptr, randseed=args.randseed)
     elif args.problem == "DoptimalDist" or args.problem =="AoptimalDist":
-        obj= problem_type(optgam=args.optgam,inputfile=args.inputfile,outfile=args.outfile,npartitions=args.npartitions,niterations=args.niterations,desiredgap=args.desiredgap,beta=args.beta,sampmode=args.sampmode,ptr=args.ptr,stopiter=args.stopiter, randseed=args.randseed) 
+        obj= problem_type(optgam=args.optgam,inputfile=args.inputfile,outfile=args.outfile,npartitions=args.npartitions,niterations=args.niterations,beta=args.beta,sampmode=args.sampmode,ptr=args.ptr, randseed=args.randseed) 
     else:
         raise TypeError('The problem is not recognized')
-    mainalgorithm(obj,beta=args.beta, remmode = args.remmode,remfiles=args.remfiles,sc=sc, stopfun=args.stopfun,K=args.K)
+    mainalgorithm(obj,beta=args.beta, remmode = args.remmode,remfiles=args.remfiles,sc=sc,K=args.K)
