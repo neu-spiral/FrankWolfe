@@ -22,37 +22,14 @@ from scipy import mod
 import random
 import shutil
 from random import Random
-def makeP(Input,sol,sc,P):
-    X = sc.textFile(Input).map(lambda l:tuple(eval(l))).zipWithIndex().map(lambda (vec,i):(i,vec)).partitionBy(P).cache()
-    lam_star = sc.textFile(sol).map(lambda t:eval(t)).map(lambda t:t[0]).zipWithIndex().filter(lambda (vec,i):vec!=0.).map(lambda (vec,i):(i,vec)).partitionBy(P).cache()
-    np.random.seed(1993)
-    (ind,tup) = X.take(1)[0]
-    d = len(tup)
-    noise = 0.1*np.matrix(np.random.rand(d,1)).reshape(d,1) 
-    P = X.join(lam_star).map(lambda (i,(tx,lami)):np.matrix(tx).T*lami).reduce(lambda x,y:x+y)
-    return P+noise
-    
-    
-def interpret(x):
-    out = []
-    for i in x:
-        out.append(eval(i)*100.)
-    return cvxopt.matrix(out)
-def Addgrad(tpl):
-    p=[]
-    for ((tx,lam,state),index) in tpl:
-        p.append(((lam,(-np.matrix(tx)*np.matrix(tx).T)[0,0]),index))
-    return p
-
 def FormForSave(tpl):
+    """Is used when saving RDDs so that they have a certain format."""
     p= []
     for ((tx ,lam),index) in tpl:
         p.append((tx,lam))
     return p
-def generate_samples(state):
-    random.setstate(state)
-    return random.random()
 def safeWrite(rdd,outputfile,dvrdump=False):
+    """It saves the given rdd in the given directory, outputfile, as a text file."""
     if os.path.isfile(outputfile):
        os.remove(outputfile)	
     elif os.path.isdir(outputfile):
@@ -73,17 +50,22 @@ def safeWrite(rdd,outputfile,dvrdump=False):
 
 
 def rankOneInvUpdate(Ainv,u,v):
+    """Given the inverse of a matrix A as Ainv, the function outputs the inverse of 
+    (A+u*v.T). It is based on Sherman-Morisson formula"""
     y1 = Ainv*u
     y2 = v.T*Ainv
     return Ainv - y1*y2/(1+y2*u)    
     
 def ComputeA(iterator):
+    """The function is used when computing A(\tetha) used in common information of D-optimal Design and A-optimal Design.
+     Please refer to Experimental Design in section V of the paper for its main definition.""" 
     p=[]
     for ((tx,lam),index) in iterator:
         p.append(lam*np.matrix(tx).T*np.matrix(tx))
     return p 
 
 def maxmin(t1,t2):
+    """This function is used in reduce operation, which finds the minimum partial derivative along with the corresponding index, datapoint, and the variable."""
     (grad1,x1,lam1,i1) =t1 
     (grad2,x2,lam2,i2) =t2 
     gradmin=min(grad1,grad2)
@@ -96,15 +78,8 @@ def maxmin(t1,t2):
         lambdaMin=lam2
         iStar=i2
     return (gradmin,xmin,lambdaMin,iStar) 
-def joinRDDs((t1,t2)):
-            if t2 == None:
-                tfinal=t1
-            else:
-                (tx1,lam1,z1)= t1
-                (tx2,lam2,z2)= t2
-                tfinal= (tx1, lam1, z1+z2)
-            return tfinal     
 def CreateRdd(splitindex, iterator):
+    """The function is used for creating RDDs from th inputfile."""
     p=[]
     for ((tx,lam),index) in iterator:
         p.append(((tx,lam),index))
@@ -126,6 +101,7 @@ class SparkFW():
         self.randseed=randseed
         self.stopiter = stopiter
     def readinput(self,sc):
+        """Given the Spark Context as sc it creats the RDD from the input file."""
         rddX=sc.textFile(self.inputefile)
         return rddX
     def gen_comm_info(self,main_rdd):
@@ -340,7 +316,6 @@ class DoptimalDist(SparkFW):
 class AoptimalDist(SparkFW):
     def gen_comm_info(self,main_rdd):
         A=main_rdd.flatMapValues(lambda iterator:ComputeA(iterator)).map(lambda (key,value):value).reduce(lambda x,y:x+y)
-        print A
         ainv= inv(A)    
         ainv2= ainv*ainv
         return ainv,ainv2
@@ -770,12 +745,17 @@ class Adaboost(SparkFW):
         self.ptr=ptr
         self.stopiter=stopiter
         self.ranseed=randseed     
-    def  gen_comm_info(self,main_rdd,d):
+    def  gen_comm_info(self,main_rdd):
         def cominfo(tpl):
             p=[]
             for ((tx,lam),index) in tpl:
                 p.append(np.matrix(tx).T*lam)
             return p    
+        def findDim(tpl):
+            for ((tx,lam),index) in tpl:
+                d = len(tx)
+            return d
+        d = main_rdd.mapValues(findDim).values().reduce(lambda x,y:x)
         c=main_rdd.flatMapValues(cominfo).map(lambda (key,value):value).reduce(lambda x,y:x+y)
         V=matrix(0.0,(d,1))
         for j in range(d):
@@ -1059,10 +1039,10 @@ if __name__=="__main__":
   #  np.save('sol_001.npy',P) 
   #  R= np.matrix(np.load(args.sol)).reshape(1000,1)
   #  R = np.matrix([R,R,R,R,R]).reshape(500,1)
-  #  R=np.matrix(np.load("bin100vec.npy")).T
+    R=np.matrix(np.load("bin100vec.npy")).T
    
- #   P=np.matrix(np.load('vec100.npy')).T
-    obj= AoptimalDist(optgam=args.optgam,inputfile=args.inputfile,outfile=args.outfile,npartitions=args.npartitions,niterations=args.niterations,desiredgap=args.desiredgap,beta=args.beta,sampmode=args.sampmode,ptr=args.ptr,stopiter=args.stopiter, randseed=args.randseed)
+   # P=np.matrix(np.load('vec100.npy')).T
+    obj= Adaboost(r=R,C=2.,optgam=args.optgam,inputfile=args.inputfile,outfile=args.outfile,npartitions=args.npartitions,niterations=args.niterations,desiredgap=args.desiredgap,beta=args.beta,sampmode=args.sampmode,ptr=args.ptr,stopiter=args.stopiter, randseed=args.randseed)
 
     mainalgorithm(obj,beta=args.beta, remmode = args.remmode,remfiles=args.remfiles,sc=sc, stopfun=args.stopfun,K=args.K)
     
