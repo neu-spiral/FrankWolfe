@@ -16,7 +16,6 @@ import time
 import argparse
 from  scipy.optimize import newton 
 import cvxopt  
-from DataGener import GenerateSimpleSamples
 import argparse
 import math
 from scipy import mod
