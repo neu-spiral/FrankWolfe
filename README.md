@@ -9,7 +9,7 @@ An example execution is as follows:
 
 	spark-submit --master <master url> --executor-memory 100g modularDistFW.py --inputfile In1000by100  --outfile test --npartitions 20 --niterations 10  --problem DoptimalDist  --inputP vec100.npy --sampmode "non smooth" --ptr 0.75  --silent
 
-This solves the D-Optimal Design problem. Its dataset is loaded from "input". Maximum number of iterations is 100. The level of parallelism is 100. The result will be stored in 'output'
+This solves the D-Optimal Design problem by Sampled FW algorithm. Its dataset is loaded from "In1000by100". Maximum number of iterations is 10. The level of parallelism is 20. The sampling ratio is 0.75. 
  
 
 Algorithm  Overview
@@ -24,6 +24,7 @@ It reads the dataset from an input file. It is passed through inputfile in the c
 
 Command-line arguments
 ----------------------
+These are the 
     usage: modularDistFW.py [-h] [--optgam OPTGAM] [--inputfile INPUTFILE]
                         [--outfile OUTFILE] [--npartitions NPARTITIONS]
                         [--niterations NITERATIONS] [--beta BETA]
