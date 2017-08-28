@@ -1,4 +1,4 @@
- Distributed FW
+ Distributed Frank-Wolfe via Spark
 ===========================
 
 It is the implementation of the distributed Frank-Wolfe algorithm. Please cite this if you intend to use this code for your research.
