@@ -24,7 +24,7 @@ It reads the dataset from an input file. It is passed through inputfile in the c
 
 Command-line arguments
 ----------------------
-These are the 
+Several program parameters can be controlled from the command line.
     usage: modularDistFW.py [-h] [--optgam OPTGAM] [--inputfile INPUTFILE]
                         [--outfile OUTFILE] [--npartitions NPARTITIONS]
                         [--niterations NITERATIONS] [--beta BETA]
