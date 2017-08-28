@@ -11,6 +11,7 @@ from pyspark import SparkConf, SparkContext
 import json
 import numpy as np
 from numpy.linalg import eigvals,inv, norm,det
+#from abc import ABCMeta,abstractmethod
 import time 
 import argparse
 from  scipy.optimize import newton 
@@ -23,13 +24,22 @@ import random
 import shutil
 from random import Random
 def FormForSave(tpl):
-    """Is used when saving RDDs so that they have a certain format."""
+    """Form each elemnt to be saved.
+       
+     Keyword arguments:
+     --tpl each elment of an RDD
+    """
     p= []
     for ((tx ,lam),index) in tpl:
         p.append((tx,lam))
     return p
 def safeWrite(rdd,outputfile,dvrdump=False):
-    """It saves the given rdd in the given directory, outputfile, as a text file."""
+    """Save the rdd in the given directory.
+
+    Keyword arguments:
+    --rdd: given rdd to be saved
+    --outputfile: desired directory to save rdd
+    """
     if os.path.isfile(outputfile):
        os.remove(outputfile)	
     elif os.path.isdir(outputfile):
@@ -50,22 +60,34 @@ def safeWrite(rdd,outputfile,dvrdump=False):
 
 
 def rankOneInvUpdate(Ainv,u,v):
-    """Given the inverse of a matrix A as Ainv, the function outputs the inverse of 
-    (A+u*v.T). It is based on Sherman-Morisson formula"""
+    """Return the inverse of (A+uv.T) based on Sherman-Morisson formula.
+     
+    Keyword arguments:
+    --Ainv: inverse of the matrix A
+    --u: a vector
+    --v: a vector
+    """
     y1 = Ainv*u
     y2 = v.T*Ainv
     return Ainv - y1*y2/(1+y2*u)    
     
 def ComputeA(iterator):
-    """The function is used when computing A(\tetha) used in common information of D-optimal Design and A-optimal Design.
-     Please refer to Experimental Design in section V of the paper for its main definition.""" 
+    """Return an iterator holding the values Θixixi.T.
+
+    Keyword arguments:
+    --iterator: an iterator holding the tuples ((xi,θi),i)
+    """  
     p=[]
     for ((tx,lam),index) in iterator:
         p.append(lam*np.matrix(tx).T*np.matrix(tx))
     return p 
 
 def maxmin(t1,t2):
-    """This function is used in reduce operation, which finds the minimum partial derivative along with the corresponding index, datapoint, and the variable."""
+    """Return a tuple with the minimum prtial derivative, along with the corresponding parameters. This is used in a reduce operation.
+    
+    Keyword arguments:
+    --t: a tuple (gi,xi,Θi,i)
+    """
     (grad1,x1,lam1,i1) =t1 
     (grad2,x2,lam2,i2) =t2 
     gradmin=min(grad1,grad2)
@@ -79,7 +101,7 @@ def maxmin(t1,t2):
         iStar=i2
     return (gradmin,xmin,lambdaMin,iStar) 
 def CreateRdd(splitindex, iterator):
-    """The function is used for creating RDDs from th inputfile."""
+    """Return an iterator, which holds tuples ((xi,Θi),i)."""
     p=[]
     for ((tx,lam),index) in iterator:
         p.append(((tx,lam),index))
@@ -88,6 +110,8 @@ def CreateRdd(splitindex, iterator):
     return [(splitindex,p)]    
     
 class SparkFW():
+ #   __metaclass__ = ABCMeta
+    
     def __init__(self,optgam,inputfile,outfile,npartitions,niterations,sampmode,beta,ptr,randseed):
         self.optgam=optgam
         self.inputefile=inputfile
@@ -99,17 +123,26 @@ class SparkFW():
         self.ptr=ptr
         self.randseed=randseed
     def readinput(self,sc):
-        """Given the Spark Context as sc it creats the RDD from the input file."""
+        """Create an RDD given the input text file.
+
+        Keyword arguments:
+        --sc: Spark Context
+        """
         rddX=sc.textFile(self.inputefile)
         return rddX
+  #  @abstractmethod
     def gen_comm_info(self,main_rdd):
-        """It generates the common information, which is denoted by h in the paper."""
+        """Return the common information h."""
         pass
+  #  @abstractmethod
     def update_comm_info(self,cinfo,iStar,mingrad,tx,Gamma):
-        """It adapts the common information at each iteration, this function is denoted by H in the paper"""
+        """Return the adapted common information.
+        This implements the function H.
+        """
         pass
+  #  @abstractmethod
     def compute_mingrad(self,main_rdd,cinfo):
-        """This function computes the partial derivatives given the local variable and common information. It is denoted by G in the paper."""
+        """Return the minimum partial derivative along with the corresponding vector xi, parameter Θi, and index i."""
         pass
     def computegapsmooth(self,main_rdd,iStar,mingrad,lambdaMin,k):
         def CompGap(tpl,lambdaMin,mingrad,iStar):
@@ -122,6 +155,7 @@ class SparkFW():
         gap=main_rdd.mapValues(lambda tpl:tpl[0]).flatMapValues(lambda t: t).sample(0,self.ptr,k).mapValues(lambda tpl:CompGap(tpl,lambdaMin,mingrad,iStar)).map(lambda (key, value):value).reduce(lambda x,y:x+y)
         return gap
     def compute_mingrad_smooth(self,main_rdd):
+        """Return the minimum partial derivative along with the corresponding vector xi, parameter Θi, and index i in Smoothened FW."""
         def arrange(tpl):
             p=[]
             [t,gen]=tpl
@@ -132,14 +166,29 @@ class SparkFW():
         return (mingrad,xmin,lambdaMin,iStar)
 
     def compute_mingrad_nonsmooth(self,main_rdd,cinfo,k):
+        """Return the minimum partial derivative along with the corresponding vector xi, parameter Θi, and index i in Sampled FW."""
         pass
     def computeoptgam(self,cinfo,xmin,iStar,mingrad):
+        """Return the step-size based on the line-minimization rule.
+        
+        Keyword arguments:
+        --cinfo: the common information
+        --xmin: the vector corssponding to the minimum partial derivative, xi*
+        --iStar: the index of minimum partial derivative, i*
+        --mingrad: the minimum partial derivative, zi*
+        """
+        
         pass
     def computegap(self,cinfo,main_rdd,iStar,mingrad,lambdaMin):
+        """Return the dulaity gap, g(Θ)."""
         pass
+   # @abstractmethod
     def computefunc(self,cinfo):
+        """Return the objective value."""
         pass
+  
     def update_lambda(self,main_rdd,iStar,Gamma):
+        """Return the RDD with updated paramters Θ, based on FW."""
         if self.sampmode != 'smooth':
             def Update(tpl,iStar,Gamma):
                 p=[]
@@ -952,9 +1001,9 @@ if __name__=="__main__":
     parser.add_argument("--problem",type=str,help="The type of the problem. Give DoptimalDist, AoptimalDist, CVXapprox, or Adaboost, to solve D-optimal Design, A-optimal Design, Convex Approximation, or AdaBoost, respectively.")
     parser.add_argument("--remmode",type=int,default = 0,help="If it is 0 then the algorithm starts from the beginning. Otherwise it will continue the algorithm from where the algorihtm stopped. It is helpful when the job crashes. ")
     parser.add_argument("--remfiles",type=str,help="The input file that keeps the RDD, It will continue from this point. Use when remmode is 1.")
-    parser.add_argument("--K",type=float,help="The budget K for the l1 constraint. Use when sampmode is LASSO")
-    parser.add_argument("--inputP",default='in1by500',type=str)
-    parser.add_argument("--C",type=str)
+    parser.add_argument("--K",type=float,help="The budget K for the l1 constraint. Use when sampmode is LASSO.")
+    parser.add_argument("--inputP",type=str,help="The vector P in Convex Approximation and the vector r in Adaboost. Must be in .npy form.")
+    parser.add_argument("--C",type=str,help="The parametr C in Adaboost.")
     verbosity_group = parser.add_mutually_exclusive_group(required=False)
     verbosity_group.add_argument('--verbose', dest='verbose', action='store_true')
     verbosity_group.add_argument('--silent', dest='verbose', action='store_false')
@@ -979,3 +1028,4 @@ if __name__=="__main__":
     else:
         raise TypeError('The problem is not recognized')
     mainalgorithm(obj,beta=args.beta, remmode = args.remmode,remfiles=args.remfiles,sc=sc,K=args.K)
+   
