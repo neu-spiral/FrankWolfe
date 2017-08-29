@@ -75,9 +75,11 @@ Citing This Work
 -----------------
 If you intend to use our code in your research, please cite our paper as follows:
 
+``` latex
      @inproceedings{distFW,
      author = {Moharrer, Armin and Ioannidis, Stratis},
      booktitle = {ICDM},
      title = {Distributing Frank-Wolfe via Map-Reduce},
      year = {2017}
             }
+```
