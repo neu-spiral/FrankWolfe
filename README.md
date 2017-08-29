@@ -70,9 +70,10 @@ Several program parameters can be controlled from the command line.
      --inputP INPUTP       The vector P in Convex Approximation and the vector r
                         in Adaboost. Must be in .npy form.
      --C C                 The parametr C in Adaboost.
-Citing the distributed FW
---------------------------
-If you intend to use the code in your research, please cite our paper.
+     
+Citing This Work
+-----------------
+If you intend to use our code in your research, please cite our paper as follows:
 
      @inproceedings{distFW,
      author = {Moharrer, Armin and Ioannidis, Stratis},
