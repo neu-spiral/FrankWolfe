@@ -7,9 +7,9 @@ Usage
 -----
 An example execution is as follows:
 
-	spark-submit --master <master url> --executor-memory 100g modularDistFW.py --inputfile In1000by100  --outfile test --npartitions 20 --niterations 10  --problem DoptimalDist  --inputP vec100.npy --sampmode "No Drops" --ptr 0.75  --silent
+	spark-submit --master <master url> --executor-memory 100g modularDistFW.py --inputfile In1000by100  --outfile test --npartitions 20 --niterations 10  --problem DoptimalDist  --inputP vec100.npy --sampmode "No Drops"   --silent
 
-This solves the D-Optimal Design problem by Parallel FW algorithm. Its dataset is loaded from "In1000by100". Maximum number of iterations is 10. The level of parallelism is 20. The sampling ratio is 0.75. 
+This solves the D-Optimal Design problem by Parallel FW algorithm. The input dataset is loaded from "In1000by100". Maximum number of iterations is 10. The level of parallelism is set to 20.
  
 
 Algorithm  Overview
