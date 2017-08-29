@@ -72,7 +72,7 @@ Several program parameters can be controlled from the command line.
      --C C                 The parametr C in Adaboost.
 Citing the distributed FW
 --------------------------
-If you intend to use the code in your research please cite our paper
+If you intend to use the code in your research please cite our paper.
 
      @inproceedings{distFW,
      author = {Moharrer, Armin and Ioannidis, Stratis},
