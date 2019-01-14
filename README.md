@@ -1,7 +1,11 @@
  Distributed Frank-Wolfe via Spark
 ===========================
 
-This repository contains the implementation of the distributed Frank-Wolfe algorithm, described in "Distributing Frank-Wolfe via Map-Reduce", A.Moharrer, S.Ioannidis, Knowledge and Information Systems (KAIS), 2018. https://doi.org/10.1007/s10115-018-1294-7 
+This repository contains the implementation of the distributed Frank-Wolfe algorithm, described in 
+
+   "Distributing Frank-Wolfe via Map-Reduce" 
+    A.Moharrer, S.Ioannidis, Knowledge and Information Systems (KAIS), 2018. 
+    https://doi.org/10.1007/s10115-018-1294-7 
 
 Usage
 -----
@@ -77,16 +81,15 @@ If you intend to use our code in your research, please cite our paper as follows
 
 ``` bibtex
      @Article{Moharrer2018,
-author="Moharrer, Armin
-and Ioannidis, Stratis",
-title="Distributing Frank--Wolfe via map-reduce",
-journal="Knowledge and Information Systems",
-year="2018",
-month="Dec",
-day="18",
-issn="0219-3116",
-doi="10.1007/s10115-018-1294-7",
-url="https://doi.org/10.1007/s10115-018-1294-7"
+              author="Moharrer, Armin and Ioannidis, Stratis",
+              title="Distributing Frank--Wolfe via map-reduce",
+              journal="Knowledge and Information Systems",
+              year="2018",
+              month="Dec",
+              day="18",
+              issn="0219-3116",
+              doi="10.1007/s10115-018-1294-7",
+              url="https://doi.org/10.1007/s10115-018-1294-7"
 }
 
 
