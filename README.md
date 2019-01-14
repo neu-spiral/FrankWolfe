@@ -3,9 +3,9 @@
 
 This repository contains the implementation of the distributed Frank-Wolfe algorithm, described in 
 
-   "Distributing Frank-Wolfe via Map-Reduce" 
-    A.Moharrer, S.Ioannidis, Knowledge and Information Systems (KAIS), 2018. 
-    https://doi.org/10.1007/s10115-018-1294-7 
+>   "Distributing Frank-Wolfe via Map-Reduce" 
+>    A.Moharrer, S.Ioannidis, Knowledge and Information Systems (KAIS), 2018. 
+>    https://doi.org/10.1007/s10115-018-1294-7 
 
 Usage
 -----
